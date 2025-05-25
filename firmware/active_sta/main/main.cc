@@ -28,20 +28,21 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "esp_http_client.h"
-#include "../_components/csi_component.h"
+#include "../../../_components/csi_component.h"
 
 SemaphoreHandle_t mutex = xSemaphoreCreateMutex();
 
 #include "config.h"
+#include "common.h"
+
+// Define the logging tag
+const char *TAG = "Active CSI collection (Station)";
 
 // Function declarations
 bool is_wifi_connected();
 
 // Task handle for the socket transmitter task
 TaskHandle_t xHandle = NULL;
-
-// Logging tag for ESP-IDF logs
-static const char *TAG = "Active CSI collection (Station)";
 
 // Include config_print header
 #include "config_print.h"
@@ -65,12 +66,9 @@ void wifi_sta_init() {
 
 // Duplicate app_main removed. Only one definition exists below.
 
+// External function declarations
 extern void time_set(char* data);
 extern size_t strlcpy(char* dst, const char* src, size_t siz);
-extern void socket_transmitter_sta_loop(bool* is_wifi_connected); 
-extern void nvs_init();
-extern void sd_init();
-extern void csi_init(char* mode);
 
 extern void vTask_socket_transmitter_sta_loop(void *pvParameters)
 {

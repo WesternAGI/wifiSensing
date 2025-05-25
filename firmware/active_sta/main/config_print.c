@@ -3,8 +3,7 @@
 #include "sdkconfig.h"
 #include "esp_log.h"
 #include "config.h"
-
-extern const char *TAG;
+#include "common.h"
 
 #define PROJECT_NAME "ACTIVE_STA"
 
