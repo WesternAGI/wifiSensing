@@ -1,0 +1,20 @@
+# Ignore all build directories recursively
+**/build/
+
+# Ignore environment
+.env
+venv/
+
+# Other common ESP-IDF build artifacts
+*.elf
+*.bin
+*.map
+*.log
+sdkconfig.old
+sdkconfig
+.project
+.cproject
+.idea/
+.vscode/
+*.pyc
+__pycache__/
