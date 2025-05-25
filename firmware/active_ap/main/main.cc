@@ -23,6 +23,7 @@
 #include <stdio.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #include "esp_system.h"
 #include "esp_spi_flash.h"
 #include "esp_flash.h"
@@ -90,6 +91,9 @@ static EventGroupHandle_t s_wifi_event_group;
 
 // Logging tag for ESP-IDF logs
 static const char *TAG = "Active CSI collection (AP)";
+
+// Define the mutex for CSI component
+SemaphoreHandle_t mutex = NULL;
 
 // WiFi event handler for AP mode: logs station connect/disconnect events
 static void wifi_event_handler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data) {
@@ -173,6 +177,13 @@ void config_print() {
  * Initializes components, WiFi AP mode, CSI collection, and prints configuration info.
  */
 extern "C" void app_main() {
+    // Create the mutex for CSI component
+    mutex = xSemaphoreCreateMutex();
+    if (mutex == NULL) {
+        ESP_LOGE(TAG, "Failed to create mutex");
+        return;
+    }
+    
     config_print();
     // esp_wifi_set_protocol(ifx,WIFI_PROTOCOL_11N);
     nvs_init();
