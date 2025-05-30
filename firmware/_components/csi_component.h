@@ -92,9 +92,18 @@ void _print_csi_csv_header() {
 }
 
 void csi_init(char *type) {
+
+    if (type == NULL) {
+        ESP_LOGE("CSI", "Type cannot be NULL");
+        return;
+    }
+    
     project_type = type;
 
 #ifdef CONFIG_SHOULD_COLLECT_CSI
+
+    vTaskDelay(100 / portTICK_PERIOD_MS);
+
     wifi_mode_t current_mode;
     esp_err_t err = esp_wifi_get_mode(&current_mode);
     if (err != ESP_OK) {
@@ -105,6 +114,9 @@ void csi_init(char *type) {
         ESP_LOGW("CSI", "CSI can only be enabled in STA mode. Current mode: %d", current_mode);
         return;
     }
+
+    ESP_LOGI("CSI", "Initializing CSI in %s mode", type);
+
     err = esp_wifi_set_csi(1);
     if (err != ESP_OK) {
         ESP_LOGE("CSI", "Failed to enable CSI: %s", esp_err_to_name(err));
@@ -123,6 +135,8 @@ void csi_init(char *type) {
     ESP_ERROR_CHECK(esp_wifi_set_csi_rx_cb(&_wifi_csi_cb, NULL));
 
     _print_csi_csv_header();
+    ESP_LOGI("CSI", "CSI initialization complete");
+
 #endif
 }
 

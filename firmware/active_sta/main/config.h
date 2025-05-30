@@ -6,7 +6,7 @@
 // WiFi Configuration
 #define WIFI_SSID      CONFIG_ESP_WIFI_SSID
 #define WIFI_PASS      CONFIG_ESP_WIFI_PASSWORD
-#define WIFI_CHANNEL   1  // Set your desired WiFi channel here
+#define WIFI_CHANNEL   6  // Set your desired WiFi channel here
 
 // CSI Collection Configuration
 #ifdef CONFIG_SHOULD_COLLECT_CSI

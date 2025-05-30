@@ -10,8 +10,7 @@ venv/
 *.bin
 *.map
 *.log
-sdkconfig.old
-sdkconfig
+
 .project
 .cproject
 .idea/
