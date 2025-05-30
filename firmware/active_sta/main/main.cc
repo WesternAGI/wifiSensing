@@ -16,7 +16,7 @@
  *   - Configure WiFi and CSI settings via menuconfig or by editing the defines below
  *   - Build and flash to ESP32 device
  *
- * Author: [Your Name or Team]
+ * Author: Gad's AI assistant
  * Date: [Date]
  */
 
@@ -139,6 +139,21 @@ static void event_handler(void* arg, esp_event_base_t event_base,
         ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
         ESP_LOGI(TAG, "Got ip:" IPSTR, IP2STR(&event->ip_info.ip));
         xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+
+        // Add a small delay before reinitializing CSI
+        vTaskDelay(100 / portTICK_PERIOD_MS);
+        
+        // Reinitialize CSI after reconnection
+        #ifdef CONFIG_SHOULD_COLLECT_CSI
+        wifi_mode_t current_mode;
+        if (esp_wifi_get_mode(&current_mode) == ESP_OK && current_mode == WIFI_MODE_STA) {
+            ESP_LOGI(TAG, "Reinitializing CSI after reconnection");
+            csi_init((char *)"STA");
+        } else {
+            ESP_LOGE(TAG, "Cannot reinitialize CSI: WiFi not in STA mode");
+        }
+        #endif
+
     }
 }
 
@@ -210,7 +225,7 @@ extern "C" void app_main() {
     TaskHandle_t xHandle = NULL;
     // esp_wifi_set_protocol(ifx,WIFI_PROTOCOL_11N);
     nvs_init();
-    sd_init();
+    // sd_init();
     station_init();
     csi_init((char *) "STA");
 

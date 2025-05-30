@@ -16,7 +16,7 @@
  *   - Configure WiFi and CSI settings via menuconfig or by editing the defines below
  *   - Build and flash to ESP32 device
  *
- * Author: [Your Name or Team]
+ * Author: Gad's AI Assistant
  * Date: [Date]
  */
 
@@ -187,7 +187,7 @@ extern "C" void app_main() {
     config_print();
     // esp_wifi_set_protocol(ifx,WIFI_PROTOCOL_11N);
     nvs_init();
-    sd_init();
+    // sd_init();
     softap_init();
 
 #if !(SHOULD_COLLECT_CSI)
