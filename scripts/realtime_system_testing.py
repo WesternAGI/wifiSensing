@@ -9,6 +9,7 @@ from sklearn.decomposition import PCA
 import serial
 import time
 import threading
+from sklearn.preprocessing import StandardScaler
 
 import pickle
 import numpy as np
@@ -60,20 +61,25 @@ def testData():
                 csi_rows_raw.append(csi_row_raw)
 
             csi_df = pd.DataFrame(csi_rows_raw)
+            print("csi_df shape: ", csi_df.shape)
             csi_df.dropna(inplace=True)
             act_amp_df, act_phase_df = csi_to_amplitude_phase(csi_df)
+            print("act_amp_df shape: ", act_amp_df.shape)
             act_amp_df, act_phase_df = filter_df(act_amp_df), filter_df(act_phase_df)
+            print("act_amp_df shape after filter: ", act_amp_df.shape)
             X1, X2 = select_data_portion(act_amp_df, N_of_samples), select_data_portion(act_phase_df, N_of_samples)
             X = pd.concat([X1, X2], axis=1)
             X = X.fillna(X.mean())
-            X = StandardScaler().fit_transform(X)
-            X = X.reshape(1, -1)
+            # X = StandardScaler().fit_transform(X)
+            print("X shape: ", X.shape)
+            X = X.to_numpy().reshape(1, -1)
 
             Xtest_pred = loaded_pipe.predict(X)
-            class_labels = pipe.named_steps['svc'].classes_
-            single_prediction_index = np.where(class_labels == single_prediction)[0][0]
-            single_prediction = class_labels[single_prediction_index]
-            print(single_prediction)
+            # class_labels = loaded_pipe.named_steps['svc'].classes_
+            print("prediction: ", Xtest_pred)
+            # single_prediction_index = np.where(class_labels == single_prediction)[0][0]
+            # single_prediction = class_labels[single_prediction_index]
+            # print(single_prediction)
 
             # Inference
             # if (Xtest_pred == [0]):
