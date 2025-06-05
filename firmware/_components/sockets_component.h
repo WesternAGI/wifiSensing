@@ -56,7 +56,10 @@ void socket_transmitter_sta_loop(bool (*is_wifi_connected)()) {
             if (sendto(socket_fd, &data, strlen(data), 0, (const struct sockaddr *) &caddr, sizeof(caddr)) !=
                 strlen(data)) {
                 vTaskDelay(1);
+                printf("ERROR: sendto error \n");
                 continue;
+            }else {
+                printf("sent data\n");
             }
 
 #if defined CONFIG_PACKET_RATE && (CONFIG_PACKET_RATE > 0)

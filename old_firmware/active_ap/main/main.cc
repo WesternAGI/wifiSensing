@@ -1,8 +1,32 @@
+/*
+ * File: main.cc
+ * Project: ESP32 Active Access Point (AP) CSI Collection
+ * Description:
+ *   This file contains the main logic for the ESP32 operating in Access Point mode (AP) to collect Channel State Information (CSI).
+ *   It sets up the ESP32 as a WiFi AP, manages connection and disconnection events, collects CSI data, and coordinates with other system components.
+ *   The code uses FreeRTOS for task management and the ESP-IDF framework for hardware abstraction.
+ *
+ * Key Responsibilities:
+ *   - Initialize WiFi in AP mode and manage connection events for stations
+ *   - Collect CSI data as configured
+ *   - Initialize and coordinate with system components (NVS, SD, CSI, Time, Input, Sockets)
+ *   - Print configuration and build info for diagnostics
+ *
+ * Usage:
+ *   - Configure WiFi and CSI settings via menuconfig or by editing the defines below
+ *   - Build and flash to ESP32 device
+ *
+ * Author: Gad's AI Assistant
+ * Date: [Date]
+ */
+
 #include <stdio.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #include "esp_system.h"
 #include "esp_spi_flash.h"
+#include "esp_flash.h"
 #include "freertos/event_groups.h"
 #include "esp_wifi.h"
 #include "esp_event.h"
@@ -25,39 +49,53 @@
  *
  * If you'd rather not, just change the below entries to strings with
  * the config you want - ie #define ESP_WIFI_SSID "mywifissid"
- *
- * To run: ex: idf.py -p /dev/ttyUSB0 flash monitor | grep "CSI_DATA" >> ../mc29b_myself_working.csv
-*/
-
-#define ESP_WIFI_SSID      "mywifi_ssid"
-#define ESP_WIFI_PASS      "mywifi_pass"
+ */
+// WiFi credentials and maximum allowed station connections (set via menuconfig or hardcoded here)
+#define ESP_WIFI_SSID      CONFIG_ESP_WIFI_SSID
+#define ESP_WIFI_PASS      CONFIG_ESP_WIFI_PASSWORD
 #define MAX_STA_CONN       16
 
-
+#ifdef CONFIG_WIFI_CHANNEL
+#define WIFI_CHANNEL CONFIG_WIFI_CHANNEL
+#else
 #define WIFI_CHANNEL 6
+#endif
 
-
-
+#ifdef CONFIG_SHOULD_COLLECT_CSI
 #define SHOULD_COLLECT_CSI 1
+#else
+#define SHOULD_COLLECT_CSI 0
+#endif
 
-
-
+#ifdef CONFIG_SHOULD_COLLECT_ONLY_LLTF
+#define SHOULD_COLLECT_ONLY_LLTF 1
+#else
 #define SHOULD_COLLECT_ONLY_LLTF 0
+#endif
 
-
-
+#ifdef CONFIG_SEND_CSI_TO_SERIAL
 #define SEND_CSI_TO_SERIAL 1
+#else
+#define SEND_CSI_TO_SERIAL 0
+#endif
 
-
-
+#ifdef CONFIG_SEND_CSI_TO_SD
+#define SEND_CSI_TO_SD 1
+#else
 #define SEND_CSI_TO_SD 0
-
+#endif
 
 /* FreeRTOS event group to signal when we are connected*/
+// FreeRTOS event group handle to signal WiFi connection events
 static EventGroupHandle_t s_wifi_event_group;
 
+// Logging tag for ESP-IDF logs
 static const char *TAG = "Active CSI collection (AP)";
 
+// Define the mutex for CSI component
+SemaphoreHandle_t mutex = NULL;
+
+// WiFi event handler for AP mode: logs station connect/disconnect events
 static void wifi_event_handler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data) {
     if (event_id == WIFI_EVENT_AP_STACONNECTED) {
         wifi_event_ap_staconnected_t* event = (wifi_event_ap_staconnected_t*) event_data;
@@ -70,6 +108,7 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base, int32_t e
     }
 }
 
+// Initialize WiFi in Access Point (AP) mode and register event handlers
 void softap_init() {
     s_wifi_event_group = xEventGroupCreate();
 
@@ -111,6 +150,7 @@ void softap_init() {
     ESP_LOGI(TAG, "softap_init finished. SSID:%s password:%s", ESP_WIFI_SSID, ESP_WIFI_PASS);
 }
 
+// Print configuration and build info to the console
 void config_print() {
     printf("\n\n\n\n\n\n\n\n");
     printf("-----------------------\n");
@@ -132,18 +172,26 @@ void config_print() {
     printf("\n\n\n\n\n\n\n\n");
 }
 
+/*
+ * Main entry point for the ESP32 application (called by ESP-IDF).
+ * Initializes components, WiFi AP mode, CSI collection, and prints configuration info.
+ */
 extern "C" void app_main() {
-
-    printf("Active CSI collection (AP) started.\n");
+    // Create the mutex for CSI component
+    mutex = xSemaphoreCreateMutex();
+    if (mutex == NULL) {
+        ESP_LOGE(TAG, "Failed to create mutex");
+        return;
+    }
+    
     config_print();
+    // esp_wifi_set_protocol(ifx,WIFI_PROTOCOL_11N);
     nvs_init();
-    sd_init();
+    // sd_init();
     softap_init();
 
 #if !(SHOULD_COLLECT_CSI)
     printf("CSI will not be collected. Check `idf.py menuconfig  # > ESP32 CSI Tool Config` to enable CSI");
-#else 
-    printf("CSI will be collected.\n");
 #endif
 
     csi_init((char *) "AP");

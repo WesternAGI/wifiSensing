@@ -5,8 +5,6 @@
 #include "math.h"
 #include <sstream>
 #include <iostream>
-#include "esp_wifi.h"
-#include "esp_log.h"
 
 char *project_type;
 
@@ -16,7 +14,7 @@ char *project_type;
 
 #define CSI_TYPE CSI_RAW
 
-extern SemaphoreHandle_t mutex;
+SemaphoreHandle_t mutex = xSemaphoreCreateMutex();
 
 void _wifi_csi_cb(void *ctx, wifi_csi_info_t *data) {
     xSemaphoreTake(mutex, portMAX_DELAY);
@@ -53,11 +51,8 @@ void _wifi_csi_cb(void *ctx, wifi_csi_info_t *data) {
        << get_steady_clock_timestamp() << ","
        << data->len << ",[";
 
-#if CONFIG_SHOULD_COLLECT_ONLY_LLTF
-    int data_len = 128;
-#else
     int data_len = data->len;
-#endif
+
 
 int8_t *my_ptr;
 #if CSI_RAW
@@ -88,40 +83,21 @@ int8_t *my_ptr;
 
 void _print_csi_csv_header() {
     char *header_str = (char *) "type,role,mac,rssi,rate,sig_mode,mcs,bandwidth,smoothing,not_sounding,aggregation,stbc,fec_coding,sgi,noise_floor,ampdu_cnt,channel,secondary_channel,local_timestamp,ant,sig_len,rx_state,real_time_set,real_timestamp,len,CSI_DATA\n";
-    printf("%s", header_str);
+    outprintf(header_str);
 }
 
 void csi_init(char *type) {
 
-    if (type == NULL) {
-        ESP_LOGE("CSI", "Type cannot be NULL");
+    // Check if the type is not "AP"
+    if (strcmp(type, "AP") != 0) {
+        ESP_LOGI("CSI_INIT", "Type is not AP, exiting csi_init.");
         return;
     }
     
     project_type = type;
 
-#ifdef CONFIG_SHOULD_COLLECT_CSI
+    ESP_ERROR_CHECK(esp_wifi_set_csi(1));
 
-    vTaskDelay(100 / portTICK_PERIOD_MS);
-
-    wifi_mode_t current_mode;
-    esp_err_t err = esp_wifi_get_mode(&current_mode);
-    if (err != ESP_OK) {
-        ESP_LOGE("CSI", "Failed to get WiFi mode: %s", esp_err_to_name(err));
-        return;
-    }
-    if (current_mode != WIFI_MODE_STA) {
-        ESP_LOGW("CSI", "CSI can only be enabled in STA mode. Current mode: %d", current_mode);
-        return;
-    }
-
-    ESP_LOGI("CSI", "Initializing CSI in %s mode", type);
-
-    err = esp_wifi_set_csi(1);
-    if (err != ESP_OK) {
-        ESP_LOGE("CSI", "Failed to enable CSI: %s", esp_err_to_name(err));
-        return;
-    }
     // @See: https://github.com/espressif/esp-idf/blob/master/components/esp_wifi/include/esp_wifi_types.h#L401
     wifi_csi_config_t configuration_csi;
     configuration_csi.lltf_en = 1;
@@ -135,9 +111,7 @@ void csi_init(char *type) {
     ESP_ERROR_CHECK(esp_wifi_set_csi_rx_cb(&_wifi_csi_cb, NULL));
 
     _print_csi_csv_header();
-    ESP_LOGI("CSI", "CSI initialization complete");
 
-#endif
 }
 
 #endif //ESP32_CSI_CSI_COMPONENT_H
