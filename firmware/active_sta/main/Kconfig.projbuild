@@ -1,32 +1,20 @@
 menu "ESP32 CSI Tool Config"
 
-    config HOST_IP_ADDR
-        string "Host IP Address"
-        default "192.168.1.100"
-        help
-            IP address of the host machine to send data to.
-
-    config HOST_PORT
-        int "Host Port"
-        default 1234
-        help
-            Port number on the host machine to send data to.
-
     config WIFI_CHANNEL
         int "WiFi Channel"
-        default 6
+        default 11
         help
             Select the WiFi channel of the AP. In North America, valid channels are {1,2,3,...,10,11}.
 
     config ESP_WIFI_SSID
         string "WiFi SSID"
-        default "myssid"
+        default "mywifi"
         help
             SSID (network name) for the example to connect to.
 
     config ESP_WIFI_PASSWORD
         string "WiFi Password"
-        default "mypassword"
+        default "mywifipass"
         help
             WiFi password (WPA or WPA2) for the example to use.
 
@@ -76,36 +64,4 @@ menu "ESP32 CSI Tool Config"
             Sending data to an SD card can take time and buffer space.
             If your ESP32 does not have an SD card, there is no reason to use this feature.
             If you do though, the program will be recognize this and not attempt writing to the SD card.
-
-    menu "SD Card Configuration"
-        visible if SEND_CSI_TO_SD
-
-        config EXAMPLE_PIN_MOSI
-            int "GPIO for MOSI (SDI)"
-            default 23
-            help
-                GPIO number (IOxx) for MOSI (Master Out Slave In).
-                Some GPIOs are used for other purposes (flash connections, etc.) and cannot be used.
-
-        config EXAMPLE_PIN_MISO
-            int "GPIO for MISO (SDO)"
-            default 19
-            help
-                GPIO number (IOxx) for MISO (Master In Slave Out).
-                Some GPIOs are used for other purposes (flash connections, etc.) and cannot be used.
-
-        config EXAMPLE_PIN_CLK
-            int "GPIO for CLK (SCK)"
-            default 18
-            help
-                GPIO number (IOxx) for CLK (Clock).
-                Some GPIOs are used for other purposes (flash connections, etc.) and cannot be used.
-
-        config EXAMPLE_PIN_CS
-            int "GPIO for CS (Chip Select)"
-            default 5
-            help
-                GPIO number (IOxx) for CS (Chip Select).
-                Some GPIOs are used for other purposes (flash connections, etc.) and cannot be used.
-    endmenu
 endmenu
