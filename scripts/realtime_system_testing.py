@@ -34,31 +34,30 @@ def testData():
         # df = tempDF[(tempDF["bandwidth"]==bandWidth)]
         df=tempDF   
         df.reset_index(inplace=True);
-        
-        # print(df.loc[5]['local_timestamp'])
-    
     
         # Initialize a variable to keep track of the last processed row
         last_processed_row = 0
         
-    
-
         # Continuously monitor the CSV file for changes
         # Check if there are new rows to process
         if len(df) > (last_processed_row+300):
             # Get the new rows since the last processed row
             new_rows = df.iloc[last_processed_row:]
-#             new_rows = df.head(batch_size)
+            # new_rows = df.head(batch_size)
             csi_rows_raw = []
             # print(len(new_rows[new_rows['bandwidth'] == bandWidth]))
 
             filtered_df = new_rows[len(new_rows)-batch_size:]
             # print(len(filtered_df))
-#                 filtered_df = pd.DataFrame(filtered_rows)
+            # filtered_df = pd.DataFrame(filtered_rows)
             for one_row in filtered_df['CSI_DATA']:
-                one_row = one_row.strip("[]")
-                csi_row_raw = [int(x) for x in one_row.split(" ") if x != '']
-                csi_rows_raw.append(csi_row_raw)
+                try :
+                    one_row = one_row.strip("[]")
+                    csi_row_raw = [int(x) for x in one_row.split(" ") if x != '']
+                    csi_rows_raw.append(csi_row_raw)
+                except :
+                    if verbose : print(f"Error during reading {one_row}")
+                    continue 
 
             csi_df = pd.DataFrame(csi_rows_raw)
             print("csi_df shape: ", csi_df.shape)
@@ -77,19 +76,6 @@ def testData():
             Xtest_pred = loaded_pipe.predict(X)
             # class_labels = loaded_pipe.named_steps['svc'].classes_
             print("prediction: ", Xtest_pred)
-            # single_prediction_index = np.where(class_labels == single_prediction)[0][0]
-            # single_prediction = class_labels[single_prediction_index]
-            # print(single_prediction)
-
-            # Inference
-            # if (Xtest_pred == [0]):
-            #     print("Walking")
-            # elif (Xtest_pred == [1]):
-            #     print("Jogging")
-            # elif (Xtest_pred == [2]):
-            #     print("Idle")
-            # else:
-            #     pass
 
             
             last_processed_row = last_processed_row + len(csi_df)

@@ -26,7 +26,7 @@
  * If you'd rather not, just change the below entries to strings with
  * the config you want - ie #define ESP_WIFI_SSID "mywifissid"
  *
- * To run: ex: idf.py -p /dev/ttyUSB0 flash monitor | grep "CSI_DATA" >> ../mc29b_myself_working.csv
+ * idf.py -p /dev/ttyUSB0 flash monitor | grep "CSI_DATA" >> ../mc29b_myself_working.csv
 */
 
 #define ESP_WIFI_SSID      "mywifi_ssid"
