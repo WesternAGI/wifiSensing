@@ -17,3 +17,4 @@ venv/
 .vscode/
 *.pyc
 __pycache__/
+README.md
