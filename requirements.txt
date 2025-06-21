@@ -9,3 +9,4 @@ matplotlib
 seaborn
 plotly
 nbformat>=4.2.0
+pyserial
