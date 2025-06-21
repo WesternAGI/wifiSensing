@@ -20,7 +20,7 @@ from utils import csi_to_amplitude_phase, N_of_samples, filter_df, select_data_p
 # Available models: human_identification_svc.pkl, pipe_final_knn.pkl, pipe_final_svm.pkl
 # MODEL_PATH = "../model/pipe_final_knn.pkl"  # Use KNN model for binary classification
 MODEL_PATH = "../model/human_identification_svc.pkl"  # Alternative: SVC model
-
+DATAFILE_PATH = "tempfile/testData_doorclosed_myslef_working.csv"
 try:
     loaded_pipe = pickle.load(open(MODEL_PATH, "rb"))
     print(f"Successfully loaded model from {MODEL_PATH}")
@@ -60,7 +60,7 @@ def testData():
     while True: 
         try:
             # Read the CSV file
-            tempDF = pd.read_csv("tempfile/tempData.csv")
+            tempDF = pd.read_csv(DATAFILE_PATH)
             tempDF.columns = column_names
             tempDF.dropna(inplace=True)
             
@@ -134,6 +134,8 @@ def testData():
                 # Make predictions for each segment
                 predictions = loaded_pipe.predict(X)
                 prediction_probabilities = None
+
+                print(f"Predictions: {predictions}")
                 
                 # Get prediction probabilities if available
                 if hasattr(loaded_pipe, 'predict_proba'):
