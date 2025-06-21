@@ -5,7 +5,7 @@ import pandas as pd
 import numpy as np
 import math
 
-N_of_samples = 200
+N_of_samples = 100
 
 def get_csi(directory, cls, verbose=True) :
 
