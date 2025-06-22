@@ -18,9 +18,9 @@ from utils import csi_to_amplitude_phase, N_of_samples, filter_df, select_data_p
 
 # Load the trained model from the notebook
 # Available models: human_identification_svc.pkl, pipe_final_knn.pkl, pipe_final_svm.pkl
-# MODEL_PATH = "../model/pipe_final_knn.pkl"  # Use KNN model for binary classification
-MODEL_PATH = "../model/human_identification_svc.pkl"  # Alternative: SVC model
-DATAFILE_PATH = "tempfile/testData_doorclosed_myslef_working.csv"
+MODEL_PATH = "../model/human_precense_svc.pkl"  # Use KNN model with complete preprocessing pipeline
+# MODEL_PATH = "../model/human_identification_svc.pkl"  # This model is missing StandardScaler!
+DATAFILE_PATH = "tempfile/tempData_doorclosed_myself_working.csv"
 try:
     loaded_pipe = pickle.load(open(MODEL_PATH, "rb"))
     print(f"Successfully loaded model from {MODEL_PATH}")
@@ -176,7 +176,7 @@ def testData():
                 continue
                 
         except FileNotFoundError:
-            print("Error: scripts/tempfile/tempData.csv not found. Make sure CSI data is being written to this file.")
+            print(f"Error: {DATAFILE_PATH} not found. Make sure CSI data is being written to this file.")
             time.sleep(5)
         except Exception as e:
             print(f"Unexpected error in data processing: {e}")
