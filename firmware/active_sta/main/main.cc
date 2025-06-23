@@ -26,6 +26,9 @@
  * If you'd rather not, just change the below entries to strings with
  * the config you want - ie #define ESP_WIFI_SSID "mywifissid"
  */
+
+ #define LOG_LOCAL_LEVEL ESP_LOG_WARN
+ 
 #define ESP_WIFI_SSID      "mywifi_ssid"
 #define ESP_WIFI_PASS      "mywifi_pass"
 
@@ -182,5 +185,5 @@ extern "C" void app_main() {
 #endif
 
     xTaskCreatePinnedToCore(&vTask_socket_transmitter_sta_loop, "socket_transmitter_sta_loop",
-                            10000, (void *) &is_wifi_connected, 100, &xHandle, 1);
+                            12000, (void *) &is_wifi_connected, 100, &xHandle, 1);
 }

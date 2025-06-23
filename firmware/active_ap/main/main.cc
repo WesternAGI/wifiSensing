@@ -29,6 +29,8 @@
  * idf.py -p /dev/ttyUSB0 flash monitor | grep "CSI_DATA" >> ../mc29b_myself_working.csv
 */
 
+#define LOG_LOCAL_LEVEL ESP_LOG_WARN
+
 #define ESP_WIFI_SSID      "mywifi_ssid"
 #define ESP_WIFI_PASS      "mywifi_pass"
 #define MAX_STA_CONN       16
