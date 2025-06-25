@@ -50,16 +50,7 @@ void _wifi_csi_cb(void *ctx, wifi_csi_info_t *data) {
 static void _init_uart_if_needed() {
 #if SEND_CSI_TO_SERIAL
     if (!uart_initialized) {
-        const uart_config_t uart_config = {
-            .baud_rate = CONFIG_ESP_CONSOLE_UART_BAUDRATE,
-            .data_bits = UART_DATA_8_BITS,
-            .parity    = UART_PARITY_DISABLE,
-            .stop_bits = UART_STOP_BITS_1,
-            .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
-        };
-        uart_param_config(UART_NUM_0, &uart_config);
-        // Pins are already configured for console; no need to set again.
-        uart_driver_install(UART_NUM_0, 2048, 0, 0, NULL, 0);
+        // UART0 already configured by ESP-IDF console, nothing to do.
         uart_initialized = true;
     }
 #endif
