@@ -8,6 +8,7 @@
 #include "freertos/queue.h"
 #include "freertos/task.h"
 #include "esp_log.h"
+#include "driver/uart.h"
 
 char *project_type;
 
@@ -21,6 +22,7 @@ SemaphoreHandle_t mutex = xSemaphoreCreateMutex();
 
 // Queue to transfer CSI packets from the Wi-Fi callback to a dedicated task
 static QueueHandle_t csi_queue = nullptr;
+static bool uart_initialized = false; // ensure UART is configured once
 
 // Fast Wi-Fi CSI callback – only copies data and enqueues it
 void _wifi_csi_cb(void *ctx, wifi_csi_info_t *data) {
@@ -45,6 +47,24 @@ void _wifi_csi_cb(void *ctx, wifi_csi_info_t *data) {
 
 
 // Task running on a dedicated core to process and print CSI data
+static void _init_uart_if_needed() {
+#if SEND_CSI_TO_SERIAL
+    if (!uart_initialized) {
+        const uart_config_t uart_config = {
+            .baud_rate = CONFIG_ESP_CONSOLE_UART_BAUDRATE,
+            .data_bits = UART_DATA_8_BITS,
+            .parity    = UART_PARITY_DISABLE,
+            .stop_bits = UART_STOP_BITS_1,
+            .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
+        };
+        uart_param_config(UART_NUM_0, &uart_config);
+        // Pins are already configured for console; no need to set again.
+        uart_driver_install(UART_NUM_0, 2048, 0, 0, NULL, 0);
+        uart_initialized = true;
+    }
+#endif
+}
+
 void csi_processing_task(void *pvParameters) {
     wifi_csi_info_t *pkt;
     for (;;) {
@@ -83,8 +103,25 @@ void csi_processing_task(void *pvParameters) {
 #endif
             ss << "]\n";
 
-            printf("%s", ss.str().c_str());
-            fflush(stdout);
+#if SEND_CSI_TO_SERIAL
+            _init_uart_if_needed();
+            std::string record = ss.str();
+            const char *buf_ptr = record.c_str();
+            size_t remaining = record.length();
+            while (remaining) {
+                int written = uart_write_bytes(UART_NUM_0, buf_ptr, remaining);
+                if (written < 0) {
+                    // UART error – drop the rest of this record
+                    break;
+                }
+                remaining -= written;
+                buf_ptr   += written;
+                if (remaining) {
+                    // Yield briefly to allow Wi-Fi tasks to run
+                    vTaskDelay(1);
+                }
+            }
+#endif
             xSemaphoreGive(mutex);
             free(pkt);
         }
@@ -108,6 +145,7 @@ void csi_init(char *type) {
 
     // Create queue & processing task the first time we initialise CSI
     if (csi_queue == nullptr) {
+        _init_uart_if_needed();
         csi_queue = xQueueCreate(20, sizeof(void *));
         xTaskCreatePinnedToCore(csi_processing_task, "csi_proc", 8192, NULL, 5, NULL, 1);
     }
