@@ -5,6 +5,9 @@
 #include "math.h"
 #include <sstream>
 #include <iostream>
+#include "freertos/queue.h"
+#include "freertos/task.h"
+#include "esp_log.h"
 
 char *project_type;
 
@@ -16,69 +19,76 @@ char *project_type;
 
 SemaphoreHandle_t mutex = xSemaphoreCreateMutex();
 
+// Queue to transfer CSI packets from the Wi-Fi callback to a dedicated task
+static QueueHandle_t csi_queue = nullptr;
+
+// Fast Wi-Fi CSI callback – only copies data and enqueues it
 void _wifi_csi_cb(void *ctx, wifi_csi_info_t *data) {
-    xSemaphoreTake(mutex, portMAX_DELAY);
-    std::stringstream ss;
-
-    wifi_csi_info_t d = data[0];
-    char mac[20] = {0};
-    sprintf(mac, "%02X:%02X:%02X:%02X:%02X:%02X", d.mac[0], d.mac[1], d.mac[2], d.mac[3], d.mac[4], d.mac[5]);
-
-    ss << "CSI_DATA,"
-       << project_type << ","
-       << mac << ","
-       // https://github.com/espressif/esp-idf/blob/9d0ca60398481a44861542638cfdc1949bb6f312/components/esp_wifi/include/esp_wifi_types.h#L314
-       << d.rx_ctrl.rssi << ","
-       << d.rx_ctrl.rate << ","
-       << d.rx_ctrl.sig_mode << ","
-       << d.rx_ctrl.mcs << ","
-       << d.rx_ctrl.cwb << ","
-       << d.rx_ctrl.smoothing << ","
-       << d.rx_ctrl.not_sounding << ","
-       << d.rx_ctrl.aggregation << ","
-       << d.rx_ctrl.stbc << ","
-       << d.rx_ctrl.fec_coding << ","
-       << d.rx_ctrl.sgi << ","
-       << d.rx_ctrl.noise_floor << ","
-       << d.rx_ctrl.ampdu_cnt << ","
-       << d.rx_ctrl.channel << ","
-       << d.rx_ctrl.secondary_channel << ","
-       << d.rx_ctrl.timestamp << ","
-       << d.rx_ctrl.ant << ","
-       << d.rx_ctrl.sig_len << ","
-       << d.rx_ctrl.rx_state << ","
-       << real_time_set << ","
-       << get_steady_clock_timestamp() << ","
-       << data->len << ",[";
-
-    int data_len = data->len;
-
-
-int8_t *my_ptr;
-#if CSI_RAW
-    my_ptr = data->buf;
-    for (int i = 0; i < data_len; i++) {
-        ss << (int) my_ptr[i] << " ";
+    // Allocate a contiguous buffer large enough for the header struct and CSI bytes
+    size_t total_size = sizeof(wifi_csi_info_t) + data->len;
+    wifi_csi_info_t *copy = (wifi_csi_info_t *) malloc(total_size);
+    if (!copy) {
+        return; // allocation failed – drop packet
     }
+
+    memcpy(copy, data, sizeof(wifi_csi_info_t));
+    // Copy raw CSI bytes just after the struct
+    copy->buf = (int8_t *) ((uint8_t *) copy + sizeof(wifi_csi_info_t));
+    memcpy(copy->buf, data->buf, data->len);
+
+    // Enqueue pointer to processing task (from non-ISR context this is safe)
+    BaseType_t res = xQueueSend(csi_queue, &copy, 0);
+    if (res != pdTRUE) {
+        free(copy); // queue full – drop
+    }
+}
+
+
+// Task running on a dedicated core to process and print CSI data
+void csi_processing_task(void *pvParameters) {
+    wifi_csi_info_t *pkt;
+    for (;;) {
+        if (xQueueReceive(csi_queue, &pkt, portMAX_DELAY) == pdTRUE) {
+            xSemaphoreTake(mutex, portMAX_DELAY);
+            std::stringstream ss;
+
+            wifi_csi_info_t d = *pkt;
+            char mac[20] = {0};
+            sprintf(mac, "%02X:%02X:%02X:%02X:%02X:%02X", d.mac[0], d.mac[1], d.mac[2], d.mac[3], d.mac[4], d.mac[5]);
+
+            ss << "CSI_DATA," << project_type << "," << mac << ","
+               << d.rx_ctrl.rssi << "," << d.rx_ctrl.rate << "," << d.rx_ctrl.sig_mode << "," << d.rx_ctrl.mcs << ","
+               << d.rx_ctrl.cwb << "," << d.rx_ctrl.smoothing << "," << d.rx_ctrl.not_sounding << "," << d.rx_ctrl.aggregation << ","
+               << d.rx_ctrl.stbc << "," << d.rx_ctrl.fec_coding << "," << d.rx_ctrl.sgi << "," << d.rx_ctrl.noise_floor << ","
+               << d.rx_ctrl.ampdu_cnt << "," << d.rx_ctrl.channel << "," << d.rx_ctrl.secondary_channel << ","
+               << d.rx_ctrl.timestamp << "," << d.rx_ctrl.ant << "," << d.rx_ctrl.sig_len << "," << d.rx_ctrl.rx_state << ","
+               << real_time_set << "," << get_steady_clock_timestamp() << "," << d.len << ",[";
+
+            int data_len = d.len;
+            int8_t *my_ptr = d.buf;
+#if CSI_RAW
+            for (int i = 0; i < data_len; i++) {
+                ss << (int) my_ptr[i] << " ";
+            }
 #endif
 #if CSI_AMPLITUDE
-    my_ptr = data->buf;
-    for (int i = 0; i < data_len / 2; i++) {
-        ss << (int) sqrt(pow(my_ptr[i * 2], 2) + pow(my_ptr[(i * 2) + 1], 2)) << " ";
-    }
+            for (int i = 0; i < data_len / 2; i++) {
+                ss << (int) sqrt(pow(my_ptr[i * 2], 2) + pow(my_ptr[(i * 2) + 1], 2)) << " ";
+            }
 #endif
 #if CSI_PHASE
-    my_ptr = data->buf;
-    for (int i = 0; i < data_len / 2; i++) {
-        ss << (int) atan2(my_ptr[i*2], my_ptr[(i*2)+1]) << " ";
-    }
+            for (int i = 0; i < data_len / 2; i++) {
+                ss << (int) atan2(my_ptr[i * 2], my_ptr[(i * 2) + 1]) << " ";
+            }
 #endif
-    ss << "]\n";
+            ss << "]\n";
 
-    printf(ss.str().c_str());
-    fflush(stdout);
-    vTaskDelay(0);
-    xSemaphoreGive(mutex);
+            printf("%s", ss.str().c_str());
+            fflush(stdout);
+            xSemaphoreGive(mutex);
+            free(pkt);
+        }
+    }
 }
 
 void _print_csi_csv_header() {
@@ -95,6 +105,12 @@ void csi_init(char *type) {
     }
     
     project_type = type;
+
+    // Create queue & processing task the first time we initialise CSI
+    if (csi_queue == nullptr) {
+        csi_queue = xQueueCreate(20, sizeof(void *));
+        xTaskCreatePinnedToCore(csi_processing_task, "csi_proc", 8192, NULL, 5, NULL, 1);
+    }
 
     ESP_ERROR_CHECK(esp_wifi_set_csi(1));
 
