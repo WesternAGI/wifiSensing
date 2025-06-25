@@ -86,10 +86,10 @@ void csi_processing_task(void *pvParameters) {
 #endif
             ss << "]\n";
 
-#if SEND_CSI_TO_SERIAL
+#ifdef CONFIG_SEND_CSI_TO_SERIAL
             printf("%s", ss.str().c_str());
             fflush(stdout);
-#endif
+#endif  // CONFIG_SEND_CSI_TO_SERIAL
             xSemaphoreGive(mutex);
             free(pkt);
         }
