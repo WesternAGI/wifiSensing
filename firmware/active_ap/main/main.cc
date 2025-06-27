@@ -36,7 +36,7 @@
 #define MAX_STA_CONN       16
 
 
-#define WIFI_CHANNEL 6
+#define WIFI_CHANNEL 1
 
 
 

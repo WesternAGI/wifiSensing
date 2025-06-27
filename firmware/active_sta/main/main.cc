@@ -32,7 +32,7 @@
 #define ESP_WIFI_SSID      "mywifi_ssid"
 #define ESP_WIFI_PASS      "mywifi_pass"
 
-#define WIFI_CHANNEL 6
+#define WIFI_CHANNEL 1
 
 
 #define SHOULD_COLLECT_CSI 0
