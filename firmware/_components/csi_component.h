@@ -17,7 +17,7 @@ char *project_type;
 #define CSI_PHASE 0
 
 #define CSI_TYPE CSI_RAW
-
+int packet_counter = 0; 
 SemaphoreHandle_t mutex = xSemaphoreCreateMutex();
 
 // Queue to transfer CSI packets from the Wi-Fi callback to a dedicated task
@@ -28,6 +28,7 @@ static QueueHandle_t csi_queue = nullptr;
 void _wifi_csi_cb(void *ctx, wifi_csi_info_t *data) {
     // Allocate a contiguous buffer large enough for the header struct and CSI bytes
     size_t total_size = sizeof(wifi_csi_info_t) + data->len;
+ 
     wifi_csi_info_t *copy = (wifi_csi_info_t *) malloc(total_size);
     if (!copy) {
         return; // allocation failed – drop packet
