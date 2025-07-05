@@ -11,4 +11,4 @@ plotly
 nbformat>=4.2.0
 pyserial
 torch
-
+seaborn
