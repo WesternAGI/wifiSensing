@@ -50,7 +50,7 @@ class WiFiSensingNet(nn.Module):
 
 # Load all available models
 MODEL_DIR = "../model/"
-DATAFILE_PATH = "tempfile/testdata.csv"
+DATAFILE_PATH = "tempfile/empty1.csv"
 
 # Initialize model containers
 pkl_models = {}
@@ -96,12 +96,29 @@ class_labels = {
 # Function to get predictions from all models
 def get_all_predictions(X):
     all_predictions = {}
+    all_logits = {}
     
     # Get predictions from scikit-learn models
     for model_name, model in pkl_models.items():
         try:
+            # Get class predictions
             preds = model.predict(X)
             all_predictions[model_name] = preds
+            
+            # Get logits or probabilities
+            if hasattr(model, 'decision_function'):  # For SVMs
+                logits = model.decision_function(X)
+                # For binary classification, decision_function returns 1D array, convert to 2D
+                if len(logits.shape) == 1:
+                    # For binary classification, create a 2D array with both class scores
+                    logits = np.column_stack([-logits, logits])
+                all_logits[model_name] = logits
+            elif hasattr(model, 'predict_proba'):  # For models with probability estimates
+                probs = model.predict_proba(X)
+                all_logits[model_name] = probs
+            else:  # For models without probability estimates
+                all_logits[model_name] = f"No probability estimates available for {model_name}"
+                
         except Exception as e:
             print(f"Error getting predictions from {model_name}: {e}")
     
@@ -114,10 +131,11 @@ def get_all_predictions(X):
                     outputs = model(X_tensor)
                     _, preds = torch.max(outputs, 1)
                     all_predictions[model_name] = preds.numpy()
+                    all_logits[model_name] = outputs.numpy()  # Raw logits from PyTorch model
                 except Exception as e:
                     print(f"Error getting predictions from {model_name}: {e}")
     
-    return all_predictions
+    return all_predictions, all_logits
 
 # Function to get combined prediction using voting
 def get_combined_prediction(predictions):
@@ -154,7 +172,15 @@ def testData():
     print("Starting real-time CSI data processing and prediction...")
     print(f"N_of_samples size: {N_of_samples}")
     print(f"Batch size: {batch_size}")
-    print(f"Expected input shape for model: {loaded_pipe.named_steps}")
+    
+    # Get the first available model for input shape info
+    if pkl_models:
+        model_name, model = next(iter(pkl_models.items()))
+        print(f"Using model '{model_name}' for inference")
+        if hasattr(model, 'named_steps'):
+            print(f"  Pipeline steps: {list(model.named_steps.keys())}")
+    else:
+        print("Warning: No scikit-learn models available for inference")
     
     while True: 
         try:
@@ -230,28 +256,46 @@ def testData():
                 
                 print(f"Feature matrix shape: {X.shape}")
                 
-                # Make predictions using all models
-                all_predictions = get_all_predictions(X)
+                # Get predictions and logits from all models
+                all_predictions, all_logits = get_all_predictions(X)
                 
                 # Get combined prediction using voting
-                combined_preds, combined_confidence = get_combined_prediction(all_predictions)
+                final_prediction, combined_confidence = get_combined_prediction(all_predictions)
                 
                 # Display results
-                print(f"\n=== PREDICTION RESULTS ===")
+                print("\n=== PREDICTION RESULTS ===")
                 print(f"Number of segments processed: {len(X)}")
                 print(f"Number of models used: {len(all_predictions)}")
                 
-                # Print predictions from each model
-                print("\nIndividual Model Predictions:")
+                print("\nIndividual Model Predictions and Logits:")
                 for model_name, preds in all_predictions.items():
-                    model_votes = Counter(preds)
-                    total = len(preds)
-                    votes_str = ", ".join([f"{class_labels.get(k, k)}: {v}/{total}" for k, v in model_votes.items()])
-                    print(f"{model_name}: {votes_str}")
+                    pred_counts = Counter(preds)
+                    pred_str = ", ".join([f"{class_labels[p]}: {c}/{len(preds)}" for p, c in pred_counts.items()])
+                    print(f"\n{model_name}:")
+                    print(f"  Predictions: {pred_str}")
+                    
+                    # Print logits or probabilities if available
+                    if model_name in all_logits and all_logits[model_name] is not None:
+                        logits = all_logits[model_name]
+                        if isinstance(logits, str):
+                            print(f"  {logits}")
+                        else:
+                            print("  Logits/Probabilities (per sample):")
+                            for i, sample_logits in enumerate(logits):
+                                if len(sample_logits) <= 10:  # Only print full logits if there aren't too many classes
+                                    logit_str = ", ".join([f"{class_labels.get(j, j)}: {v:.4f}" for j, v in enumerate(sample_logits)])
+                                else:
+                                    # For many classes, just show the top 3
+                                    top_indices = np.argsort(sample_logits)[-3:][::-1]  # Get indices of top 3 logits
+                                    logit_str = ", ".join([f"{class_labels.get(j, j)}: {sample_logits[j]:.4f}" for j in top_indices])
+                                    logit_str += f" ... (and {len(sample_logits)-3} more classes)"
+                                print(f"    Sample {i+1}: {logit_str}")
+                    else:
+                        print("  No logits/probabilities available")
                 
                 # Print combined prediction
-                if combined_preds is not None:
-                    combined_votes = Counter(combined_preds)
+                if final_prediction is not None:
+                    combined_votes = Counter(final_prediction)
                     majority_pred = combined_votes.most_common(1)[0][0]
                     majority_class = class_labels.get(majority_pred, f"Unknown class {majority_pred}")
                     
