@@ -10,28 +10,80 @@ import serial
 import time
 import threading
 from sklearn.preprocessing import StandardScaler
+import torch
+import torch.nn as nn
+from torch import optim
+from collections import Counter
 
 import pickle
 import numpy as np
 import pandas as pd
 from utils import csi_to_amplitude_phase, N_of_samples, filter_df, select_data_portion
 
-# Load the trained model from the notebook
-# Available models: human_identification_svc.pkl, pipe_final_knn.pkl, pipe_final_svm.pkl
-MODEL_PATH = "../model/human_precense_svc.pkl"  # Use KNN model with complete preprocessing pipeline
-# MODEL_PATH = "../model/human_identification_svc.pkl"  # This model is missing StandardScaler!
-DATAFILE_PATH = "tempfile/tempData_doorclosed_myself_working.csv"
-try:
-    loaded_pipe = pickle.load(open(MODEL_PATH, "rb"))
-    print(f"Successfully loaded model from {MODEL_PATH}")
-    print(f"Model pipeline steps: {loaded_pipe.named_steps.keys()}")
-    print(f"Model classes: {loaded_pipe.classes_}")
-except FileNotFoundError:
-    print(f"Error: Model file {MODEL_PATH} not found!")
-    print("Available models in model/:")
-    for file in os.listdir("../model/"):
-        if file.endswith(".pkl"):
-            print(f"  - {file}")
+# Define the PyTorch model architecture (must match training)
+class WiFiSensingNet(nn.Module):
+    def __init__(self, input_size=10800, num_classes=2):
+        super(WiFiSensingNet, self).__init__()
+        self.fc1 = nn.Linear(input_size, 2048)
+        self.bn1 = nn.BatchNorm1d(2048)
+        self.fc2 = nn.Linear(2048, 1024)
+        self.bn2 = nn.BatchNorm1d(1024)
+        self.fc3 = nn.Linear(1024, 512)
+        self.bn3 = nn.BatchNorm1d(512)
+        self.fc4 = nn.Linear(512, 256)
+        self.bn4 = nn.BatchNorm1d(256)
+        self.fc5 = nn.Linear(256, num_classes)
+        self.dropout = nn.Dropout(0.5)
+        self.relu = nn.ReLU()
+        
+    def forward(self, x):
+        x = self.relu(self.bn1(self.fc1(x)))
+        x = self.dropout(x)
+        x = self.relu(self.bn2(self.fc2(x)))
+        x = self.dropout(x)
+        x = self.relu(self.bn3(self.fc3(x)))
+        x = self.dropout(x)
+        x = self.relu(self.bn4(self.fc4(x)))
+        x = self.dropout(x)
+        x = self.fc5(x)
+        return x
+
+# Load all available models
+MODEL_DIR = "../model/"
+DATAFILE_PATH = "tempfile/testdata.csv"
+
+# Initialize model containers
+pkl_models = {}
+pth_models = {}
+
+# Load all .pkl models (scikit-learn pipelines)
+for file in os.listdir(MODEL_DIR):
+    if file.endswith(".pkl"):
+        try:
+            model = pickle.load(open(os.path.join(MODEL_DIR, file), "rb"))
+            pkl_models[file] = model
+            print(f"Loaded scikit-learn model: {file}")
+            if hasattr(model, 'named_steps'):
+                print(f"  Pipeline steps: {list(model.named_steps.keys())}")
+            if hasattr(model, 'classes_'):
+                print(f"  Classes: {model.classes_}")
+        except Exception as e:
+            print(f"Error loading {file}: {e}")
+
+# Load all .pth models (PyTorch models)
+for file in os.listdir(MODEL_DIR):
+    if file.endswith(".pth"):
+        try:
+            model = WiFiSensingNet()
+            model.load_state_dict(torch.load(os.path.join(MODEL_DIR, file), map_location=torch.device('cpu')))
+            model.eval()
+            pth_models[file] = model
+            print(f"Loaded PyTorch model: {file}")
+        except Exception as e:
+            print(f"Error loading {file}: {e}")
+
+if not pkl_models and not pth_models:
+    print("No valid models found in the model directory!")
     exit(1)
 
 # Class labels mapping (based on notebook training data)
@@ -40,6 +92,53 @@ class_labels = {
     0: "empty",
     1: "working"
 }
+
+# Function to get predictions from all models
+def get_all_predictions(X):
+    all_predictions = {}
+    
+    # Get predictions from scikit-learn models
+    for model_name, model in pkl_models.items():
+        try:
+            preds = model.predict(X)
+            all_predictions[model_name] = preds
+        except Exception as e:
+            print(f"Error getting predictions from {model_name}: {e}")
+    
+    # Get predictions from PyTorch models
+    if pth_models:
+        X_tensor = torch.FloatTensor(X)
+        with torch.no_grad():
+            for model_name, model in pth_models.items():
+                try:
+                    outputs = model(X_tensor)
+                    _, preds = torch.max(outputs, 1)
+                    all_predictions[model_name] = preds.numpy()
+                except Exception as e:
+                    print(f"Error getting predictions from {model_name}: {e}")
+    
+    return all_predictions
+
+# Function to get combined prediction using voting
+def get_combined_prediction(predictions):
+    if not predictions:
+        return None, 0.0
+    
+    # Transpose to get predictions per sample
+    sample_predictions = list(zip(*predictions.values()))
+    final_predictions = []
+    
+    for sample_preds in sample_predictions:
+        # Count votes for each class
+        vote_counts = Counter(sample_preds)
+        # Get the most common prediction
+        most_common = vote_counts.most_common(1)[0]
+        final_predictions.append(most_common[0])
+    
+    # Calculate confidence as percentage of models that agreed with the majority
+    confidence = sum(1 for pred in sample_predictions[0] if pred == final_predictions[0]) / len(sample_predictions[0])
+    
+    return final_predictions, confidence
 
 column_names=["type","role","mac","rssi","rate","sig_mode","mcs","bandwidth","smoothing","not_sounding","aggregation","stbc","fec_coding","sgi","noise_floor","ampdu_cnt","channel","secondary_channel","local_timestamp","ant","sig_len","rx_state","real_time_set","real_timestamp","len","CSI_DATA"]
 
@@ -131,38 +230,34 @@ def testData():
                 
                 print(f"Feature matrix shape: {X.shape}")
                 
-                # Make predictions for each segment
-                predictions = loaded_pipe.predict(X)
-                prediction_probabilities = None
-
-                print(f"Predictions: {predictions}")
+                # Make predictions using all models
+                all_predictions = get_all_predictions(X)
                 
-                # Get prediction probabilities if available
-                if hasattr(loaded_pipe, 'predict_proba'):
-                    try:
-                        prediction_probabilities = loaded_pipe.predict_proba(X)
-                    except:
-                        pass
+                # Get combined prediction using voting
+                combined_preds, combined_confidence = get_combined_prediction(all_predictions)
                 
                 # Display results
                 print(f"\n=== PREDICTION RESULTS ===")
-                print(f"Number of segments processed: {len(predictions)}")
+                print(f"Number of segments processed: {len(X)}")
+                print(f"Number of models used: {len(all_predictions)}")
                 
-                for i, pred in enumerate(predictions):
-                    class_name = class_labels.get(pred, f"Unknown class {pred}")
-                    prob_str = ""
-                    if prediction_probabilities is not None:
-                        prob_str = f" (confidence: {max(prediction_probabilities[i]):.3f})"
-                    print(f"Segment {i+1}: {class_name}{prob_str}")
+                # Print predictions from each model
+                print("\nIndividual Model Predictions:")
+                for model_name, preds in all_predictions.items():
+                    model_votes = Counter(preds)
+                    total = len(preds)
+                    votes_str = ", ".join([f"{class_labels.get(k, k)}: {v}/{total}" for k, v in model_votes.items()])
+                    print(f"{model_name}: {votes_str}")
                 
-                # Overall prediction (majority vote)
-                unique, counts = np.unique(predictions, return_counts=True)
-                majority_pred = unique[np.argmax(counts)]
-                majority_class = class_labels.get(majority_pred, f"Unknown class {majority_pred}")
-                confidence = max(counts) / len(predictions)
+                # Print combined prediction
+                if combined_preds is not None:
+                    combined_votes = Counter(combined_preds)
+                    majority_pred = combined_votes.most_common(1)[0][0]
+                    majority_class = class_labels.get(majority_pred, f"Unknown class {majority_pred}")
+                    
+                    print(f"\nCOMBINED PREDICTION: {majority_class}")
+                    print(f"Confidence: {combined_confidence:.3f} (agreement among models)")
                 
-                print(f"\nOVERALL PREDICTION: {majority_class}")
-                print(f"Confidence: {confidence:.3f} ({max(counts)}/{len(predictions)} segments)")
                 print("=" * 30)
                 
                 last_processed_row = last_processed_row + len(csi_df)
