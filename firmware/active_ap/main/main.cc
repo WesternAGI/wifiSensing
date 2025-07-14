@@ -75,42 +75,78 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base, int32_t e
 void softap_init() {
     s_wifi_event_group = xEventGroupCreate();
 
+    // Initialize TCP/IP and event loop
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
-    esp_netif_create_default_wifi_ap();
+    
+    // Create default AP interface
+    esp_netif_t *ap_netif = esp_netif_create_default_wifi_ap();
+    assert(ap_netif);
 
+    // Configure WiFi with default settings
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
 
+    // Register event handler
     ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT,
-                                                        ESP_EVENT_ANY_ID,
-                                                        &wifi_event_handler,
-                                                        NULL,
-                                                        NULL));
+                                                      ESP_EVENT_ANY_ID,
+                                                      &wifi_event_handler,
+                                                      NULL,
+                                                      NULL));
 
+    // Configure AP settings
     wifi_ap_config_t wifi_ap_config = {};
     wifi_ap_config.channel = WIFI_CHANNEL;
-    wifi_ap_config.authmode = WIFI_AUTH_WPA_WPA2_PSK;
-    wifi_ap_config.max_connection = MAX_STA_CONN;
+    wifi_ap_config.authmode = WIFI_AUTH_WPA2_PSK;  // Use WPA2 only (more compatible than WPA/WPA2 mixed)
+    wifi_ap_config.max_connection = 4;  // Reduced from 16 to 4 for better stability
+    wifi_ap_config.beacon_interval = 100;  // 100ms beacon interval (default)
+    wifi_ap_config.ssid_hidden = 0;  // Make SSID visible
+    
+    // Set country code (this affects available channels and power)
+    wifi_country_t country = {
+        .cc = "US",
+        .schan = 1,
+        .nchan = 11,
+        .max_tx_power = 84,
+        .policy = WIFI_COUNTRY_POLICY_AUTO
+    };
+    ESP_ERROR_CHECK(esp_wifi_set_country(&country));
 
+    // Configure WiFi
     wifi_config_t wifi_config = {
-            .ap = wifi_ap_config,
+        .ap = wifi_ap_config,
     };
 
-    strlcpy((char *) wifi_config.ap.ssid, ESP_WIFI_SSID, sizeof(ESP_WIFI_SSID));
-    strlcpy((char *) wifi_config.ap.password, ESP_WIFI_PASS, sizeof(ESP_WIFI_PASS));
+    // Copy SSID and password
+    strlcpy((char *)wifi_config.ap.ssid, ESP_WIFI_SSID, sizeof(ESP_WIFI_SSID));
+    strlcpy((char *)wifi_config.ap.password, ESP_WIFI_PASS, sizeof(ESP_WIFI_PASS));
 
+    // If no password is set, use open authentication
     if (strlen(ESP_WIFI_PASS) == 0) {
         wifi_config.ap.authmode = WIFI_AUTH_OPEN;
     }
 
+    // Set WiFi mode to AP
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
+    
+    // Configure WiFi parameters
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wifi_config));
+    
+    // Set WiFi bandwidth to 20MHz for better compatibility
+    ESP_ERROR_CHECK(esp_wifi_set_bandwidth(ESP_IF_WIFI_AP, WIFI_BW_HT20));
+    
+    // Enable AMPDU RX for better performance
+    ESP_ERROR_CHECK(esp_wifi_stop());
+    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));  // Disable power save for better performance
+    
+    // Start WiFi
     ESP_ERROR_CHECK(esp_wifi_start());
 
-    esp_wifi_set_ps(WIFI_PS_NONE);
+    // Set maximum WiFi transmit power (20dBm)
+    ESP_ERROR_CHECK(esp_wifi_set_max_tx_power(84));  // 84 = 20dBm
 
-    ESP_LOGI(TAG, "softap_init finished. SSID:%s password:%s", ESP_WIFI_SSID, ESP_WIFI_PASS);
+    ESP_LOGI(TAG, "softap_init finished. SSID:%s password:%s channel:%d", 
+             ESP_WIFI_SSID, ESP_WIFI_PASS, WIFI_CHANNEL);
 }
 
 void config_print() {
