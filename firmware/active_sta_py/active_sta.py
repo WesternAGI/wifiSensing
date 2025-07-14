@@ -124,32 +124,73 @@ class ActiveStation:
         raise OSError(error_msg)
     
     def connect_to_wifi(self):
-        """Connect to the WiFi network."""
-        system = platform.system().lower()
+        """Verify connection to the WiFi network."""
+        logger.info(f"Verifying connection to {self.ssid}...")
         
         try:
-            if system == 'linux':
-                # Using nmcli to connect to WiFi on Linux
-                subprocess.run([
-                    'nmcli', 'device', 'wifi', 'connect', 
-                    self.ssid, 'password', self.password
-                ], check=True)
+            # First, check if we're already connected to the target network
+            if platform.system().lower() == 'linux':
+                result = subprocess.run(
+                    ['iwgetid', '-r'],
+                    capture_output=True,
+                    text=True
+                )
+                current_ssid = result.stdout.strip()
                 
-            elif system == 'darwin':  # macOS
-                # Using networksetup to connect to WiFi on macOS
-                subprocess.run([
-                    'networksetup', '-setairportnetwork', self.interface,
-                    self.ssid, self.password
-                ], check=True)
+                if current_ssid == self.ssid:
+                    logger.info(f"Already connected to {self.ssid}")
+                    self.connected = True
+                    return True
+                else:
+                    logger.warning(f"Please connect to {self.ssid} manually first")
+                    logger.warning(f"Current network: {current_ssid if current_ssid else 'Not connected'}")
+                    
+                    # Try to connect using nmcli if available
+                    try:
+                        logger.info(f"Attempting to connect to {self.ssid}...")
+                        subprocess.run(
+                            ['nmcli', 'device', 'wifi', 'connect', self.ssid, 'password', self.password],
+                            check=True,
+                            capture_output=True,
+                            text=True
+                        )
+                        logger.info(f"Successfully connected to {self.ssid}")
+                        self.connected = True
+                        return True
+                    except subprocess.CalledProcessError as e:
+                        logger.warning(f"Could not connect automatically: {e.stderr.strip()}")
+                        logger.warning("Please connect to the WiFi network manually and try again")
+                        return False
+                        
+            elif platform.system().lower() == 'darwin':  # macOS
+                result = subprocess.run(
+                    ['/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport', '-I'],
+                    capture_output=True,
+                    text=True
+                )
+                current_ssid = None
+                for line in result.stdout.split('\n'):
+                    if ' SSID:' in line:
+                        current_ssid = line.split(': ')[1].strip()
+                        break
+                        
+                if current_ssid == self.ssid:
+                    logger.info(f"Already connected to {self.ssid}")
+                    self.connected = True
+                    return True
+                else:
+                    logger.warning(f"Please connect to {self.ssid} manually first")
+                    logger.warning(f"Current network: {current_ssid if current_ssid else 'Not connected'}")
+                    return False
+                    
+            else:
+                logger.warning("Unsupported OS. Please ensure you're connected to the correct WiFi network.")
+                return True  # Continue anyway
                 
-            logger.info(f"Successfully connected to {self.ssid}")
-            self.connected = True
-            return True
-            
-        except subprocess.CalledProcessError as e:
-            logger.error(f"Failed to connect to WiFi: {e}")
-            self.connected = False
-            return False
+        except Exception as e:
+            logger.error(f"Error checking WiFi connection: {e}")
+            logger.warning("Will attempt to continue, but connection may fail")
+            return True  # Continue anyway
     
     def send_data(self, data=None):
         """
