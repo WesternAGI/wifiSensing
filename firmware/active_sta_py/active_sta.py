@@ -324,3 +324,22 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+# (venv) (base) lab7@lab7-XPS-8940:~/Desktop/wifiSensing/firmware/active_sta_py$ python active_sta.py --ssid mywifi_ssid --password mywifi_pass --debug
+# 2025-07-13 22:39:50,317 - active_sta - DEBUG - Found Linux WiFi interface: wlo1
+
+# ==================================================
+# Starting Active Station
+# Interface: wlo1
+# Connecting to SSID: mywifi_ssid
+# Target AP: 192.168.4.1:80
+# Channel: 1
+# Interval: 1.0 seconds
+# ==================================================
+
+# Error: Connection activation failed: Secrets were required, but not provided.
+# 2025-07-13 22:40:35,695 - active_sta - ERROR - Failed to connect to WiFi: Command '['nmcli', 'device', 'wifi', 'connect', 'mywifi_ssid', 'password', 'mywifi_pass']' returned non-zero exit status 4.
+# 2025-07-13 22:40:35,695 - active_sta - ERROR - Failed to connect to WiFi. Exiting.
+# (venv) (base) lab7@lab7-XPS-8940:~/Desktop/wifiSensing/firmware/active_sta_py$ ^C
+# (venv) (base) lab7@lab7-XPS-8940:~/Desktop/wifiSensing/firmware/active_sta_py$ 
+
