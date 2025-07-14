@@ -117,14 +117,10 @@ void softap_init() {
         .ap = wifi_ap_config,
     };
 
-    // Copy SSID and password
+    // Copy SSID and set open authentication (no password)
     strlcpy((char *)wifi_config.ap.ssid, ESP_WIFI_SSID, sizeof(ESP_WIFI_SSID));
-    strlcpy((char *)wifi_config.ap.password, ESP_WIFI_PASS, sizeof(ESP_WIFI_PASS));
-
-    // If no password is set, use open authentication
-    if (strlen(ESP_WIFI_PASS) == 0) {
-        wifi_config.ap.authmode = WIFI_AUTH_OPEN;
-    }
+    wifi_config.ap.password[0] = '\0';
+    wifi_config.ap.authmode = WIFI_AUTH_OPEN;
 
     // Set WiFi mode to AP
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
@@ -133,7 +129,7 @@ void softap_init() {
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wifi_config));
     
     // Set WiFi bandwidth to 20MHz for better compatibility
-    ESP_ERROR_CHECK(esp_wifi_set_bandwidth(ESP_IF_WIFI_AP, WIFI_BW_HT20));
+    ESP_ERROR_CHECK(esp_wifi_set_bandwidth(WIFI_IF_AP, WIFI_BW_HT20));
     
     // Enable AMPDU RX for better performance
     ESP_ERROR_CHECK(esp_wifi_stop());

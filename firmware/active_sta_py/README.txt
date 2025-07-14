@@ -1,3 +1,8 @@
+To increase transmission speed, run active_sta.py with a smaller --interval value (e.g., --interval 0.01 for 100 packets/sec):
+
+    python active_sta.py --ssid mywifi_ssid --server-ip 192.168.4.1 --interval 0.01
+
+The script now uses a shorter socket timeout for faster retries.
 # Active Station (Python Implementation)
 
 This is a Python implementation of the Active Station (STA) that runs on Linux/macOS. It connects to a WiFi network and sends data to trigger CSI (Channel State Information) collection on an access point.
