@@ -26,7 +26,7 @@ logging.basicConfig(
 logger = logging.getLogger('active_sta')
 
 class ActiveStation:
-    def __init__(self, ssid, password, server_ip='192.168.4.1', server_port=80, channel=1):
+    def __init__(self, ssid, password, server_ip='192.168.4.1', server_port=80, channel=1, interface=None):
         """
         Initialize the Active Station.
         
@@ -36,13 +36,14 @@ class ActiveStation:
             server_ip (str): IP address of the server (AP) to send data to
             server_port (int): Port of the server (AP) to send data to
             channel (int): WiFi channel to use (default: 1)
+            interface (str, optional): Network interface to use (e.g., 'en0' for macOS, 'wlan0' for Linux)
         """
         self.ssid = ssid
         self.password = password
         self.server_ip = server_ip
         self.server_port = server_port
         self.channel = channel
-        self.interface = self._get_wifi_interface()
+        self.interface = interface if interface else self._get_wifi_interface()
         self.connected = False
         
         # Set up socket for communication with AP
@@ -52,20 +53,75 @@ class ActiveStation:
     def _get_wifi_interface(self):
         """Get the WiFi interface name based on the OS."""
         system = platform.system().lower()
+        
         if system == 'linux':
             # Common WiFi interface names on Linux
-            possible_interfaces = ['wlan0', 'wlp2s0', 'wlp3s0', 'wlan1']
-        elif system == 'darwin':  # macOS
-            possible_interfaces = ['en0', 'en1']
-        else:
-            raise OSError("Unsupported operating system")
+            possible_interfaces = ['wlan0', 'wlp2s0', 'wlp3s0', 'wlan1', 'wlo1', 'wlp0s20f3']
             
-        # Check which interface exists
-        for interface in possible_interfaces:
-            if os.path.exists(f'/sys/class/net/{interface}'):
-                return interface
+            # Check which interface exists
+            for interface in possible_interfaces:
+                if os.path.exists(f'/sys/class/net/{interface}'):
+                    logger.debug(f"Found Linux WiFi interface: {interface}")
+                    return interface
+                    
+        elif system == 'darwin':  # macOS
+            try:
+                # Use networksetup to find the active WiFi interface
+                result = subprocess.run(
+                    ['networksetup', '-listallhardwareports'],
+                    capture_output=True, text=True, check=True
+                )
                 
-        raise OSError("Could not determine WiFi interface")
+                # Parse the output to find the WiFi interface
+                lines = result.stdout.split('\n')
+                for i, line in enumerate(lines):
+                    if 'Wi-Fi' in line or 'AirPort' in line:
+                        # The next line should contain the device name
+                        if i + 1 < len(lines):
+                            device_line = lines[i + 1]
+                            if 'Device' in device_line:
+                                interface = device_line.split(':')[-1].strip()
+                                logger.debug(f"Found macOS WiFi interface: {interface}")
+                                return interface
+                
+                # Fallback to common interface names if parsing fails
+                possible_interfaces = ['en0', 'en1']
+                for interface in possible_interfaces:
+                    try:
+                        # Check if the interface is a WiFi interface
+                        result = subprocess.run(
+                            ['ifconfig', interface],
+                            capture_output=True, text=True
+                        )
+                        if 'status: active' in result.stdout or 'UP' in result.stdout:
+                            logger.debug(f"Found active interface via ifconfig: {interface}")
+                            return interface
+                    except:
+                        continue
+                        
+            except Exception as e:
+                logger.warning(f"Error detecting WiFi interface: {e}")
+                # Fall through to the error below
+        else:
+            raise OSError(f"Unsupported operating system: {system}")
+            
+        # If we get here, we couldn't determine the interface
+        available_interfaces = []
+        try:
+            if system == 'linux':
+                available_interfaces = os.listdir('/sys/class/net/')
+            elif system == 'darwin':
+                result = subprocess.run(['ifconfig', '-l'], capture_output=True, text=True)
+                available_interfaces = result.stdout.strip().split()
+        except:
+            pass
+            
+        error_msg = (
+            "Could not determine WiFi interface. "
+            f"Available interfaces: {available_interfaces}. "
+            "Please specify the interface manually using the --interface argument."
+        )
+        raise OSError(error_msg)
     
     def connect_to_wifi(self):
         """Connect to the WiFi network."""
@@ -95,12 +151,12 @@ class ActiveStation:
             self.connected = False
             return False
     
-    def send_data(self, data=b"CSI_DATA_PACKET"):
+    def send_data(self, data=None):
         """
         Send data to the server (AP).
         
         Args:
-            data (bytes): Data to send (default: b"CSI_DATA_PACKET")
+            data (bytes, optional): Data to send. If None, a default packet will be created.
             
         Returns:
             bool: True if data was sent successfully, False otherwise
@@ -110,12 +166,25 @@ class ActiveStation:
             return False
             
         try:
-            self.socket.sendto(data, (self.server_ip, self.server_port))
-            logger.debug(f"Sent {len(data)} bytes to {self.server_ip}:{self.server_port}")
+            # Create a more noticeable packet if none provided
+            if data is None:
+                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+                packet = f"CSI_DATA_PACKET_{timestamp}".encode('utf-8')
+            else:
+                packet = data
+                
+            # Send the packet
+            self.socket.sendto(packet, (self.server_ip, self.server_port))
+            logger.debug(f"Sent {len(packet)} bytes to {self.server_ip}:{self.server_port}")
+            logger.debug(f"Packet content: {packet}")
+            
+            # Print a dot for each sent packet for better visibility
+            print('.', end='', flush=True)
+            
             return True
             
         except Exception as e:
-            logger.error(f"Failed to send data: {e}")
+            logger.error(f"Failed to send data to {self.server_ip}:{self.server_port}: {e}")
             return False
     
     def run(self, interval=1.0, duration=None):
@@ -126,47 +195,83 @@ class ActiveStation:
             interval (float): Time in seconds between sending data packets (default: 1.0)
             duration (int): Duration in seconds to run for (default: None, run indefinitely)
         """
-        logger.info(f"Starting Active Station on interface {self.interface}")
-        logger.info(f"Connecting to {self.ssid}...")
+        print("\n" + "="*50)
+        print(f"Starting Active Station")
+        print(f"Interface: {self.interface}")
+        print(f"Connecting to SSID: {self.ssid}")
+        print(f"Target AP: {self.server_ip}:{self.server_port}")
+        print(f"Channel: {self.channel}")
+        print(f"Interval: {interval} seconds")
+        print("="*50 + "\n")
         
         if not self.connect_to_wifi():
             logger.error("Failed to connect to WiFi. Exiting.")
             return
             
-        logger.info(f"Sending data to {self.server_ip}:{self.server_port} every {interval} seconds")
+        print("\n" + "="*50)
+        print(f"Connected to {self.ssid}")
+        print("Sending data packets (each '.' represents a sent packet)")
+        print("Press Ctrl+C to stop\n")
+        print("-"*50)
         
         start_time = time.time()
         packet_count = 0
+        last_log_time = time.time()
         
         try:
             while True:
+                current_time = time.time()
+                
                 # Check if we've exceeded the duration
-                if duration and (time.time() - start_time) > duration:
-                    logger.info(f"Reached duration limit of {duration} seconds. Stopping.")
+                if duration and (current_time - start_time) > duration:
+                    print("\n" + "="*50)
+                    print(f"Reached duration limit of {duration} seconds. Stopping.")
                     break
                 
+                # Log status every 5 seconds
+                if current_time - last_log_time >= 5.0:
+                    elapsed = current_time - start_time
+                    print(f"\n[Status] Running for {elapsed:.1f}s | Packets sent: {packet_count} | Interval: {interval}s")
+                    last_log_time = current_time
+                
                 # Send data packet
-                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
-                data = f"CSI_DATA_PACKET_{timestamp}".encode('utf-8')
-                
-                if self.send_data(data):
+                if self.send_data():
                     packet_count += 1
-                    if packet_count % 10 == 0:  # Log every 10 packets
-                        logger.info(f"Sent {packet_count} packets")
+                else:
+                    print("x", end='', flush=True)  # Show 'x' for failed sends
                 
-                # Wait for the next interval
-                time.sleep(interval)
+                # Calculate sleep time to maintain consistent interval
+                elapsed_in_loop = time.time() - current_time
+                sleep_time = max(0, interval - elapsed_in_loop)
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
                 
         except KeyboardInterrupt:
-            logger.info("\nReceived keyboard interrupt. Stopping...")
+            print("\n" + "="*50)
+            print("Received keyboard interrupt. Stopping...")
+            
+        except Exception as e:
+            print("\n" + "="*50)
+            logger.error(f"Unexpected error: {e}", exc_info=True)
             
         finally:
-            logger.info(f"Stopped. Sent a total of {packet_count} packets.")
-            self.socket.close()
+            elapsed = time.time() - start_time
+            print("\n" + "="*50)
+            print("Active Station Stopped")
+            print(f"Total runtime: {elapsed:.1f} seconds")
+            print(f"Total packets sent: {packet_count}")
+            print(f"Average packet rate: {packet_count/max(elapsed, 0.1):.2f} packets/second")
+            print("="*50 + "\n")
+            
+            try:
+                self.socket.close()
+            except:
+                pass
 
 
 def main():
     # Parse command line arguments
+    #python active_sta.py --ssid mywifi_ssid --password mywifi_pass --debug
     parser = argparse.ArgumentParser(description='Active Station for WiFi CSI collection')
     parser.add_argument('--ssid', type=str, help='SSID of the target WiFi network')
     parser.add_argument('--password', type=str, help='Password for the WiFi network')
@@ -176,6 +281,8 @@ def main():
                        help='Port of the server (AP) to send data to (default: 80)')
     parser.add_argument('--channel', type=int, default=1,
                        help='WiFi channel to use (default: 1)')
+    parser.add_argument('--interface', type=str, default=None,
+                       help='Network interface to use (e.g., en0 for macOS, wlan0 for Linux)')
     parser.add_argument('--interval', type=float, default=1.0,
                        help='Time in seconds between sending data packets (default: 1.0)')
     parser.add_argument('--duration', type=int, default=None,
@@ -208,7 +315,8 @@ def main():
         password=password,
         server_ip=args.server_ip,
         server_port=args.server_port,
-        channel=args.channel
+        channel=args.channel,
+        interface=args.interface
     )
     
     station.run(interval=args.interval, duration=args.duration)
