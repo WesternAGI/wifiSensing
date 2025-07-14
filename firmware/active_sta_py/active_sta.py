@@ -152,20 +152,20 @@ class ActiveStation:
                 packet = f"CSI_DATA_PACKET_{timestamp}".encode('utf-8')
             else:
                 packet = data
-            
-            # Set a timeout for the socket
-            self.socket.settimeout(2.0)  # 2 second timeout
-            
+
+            # Set a shorter timeout for the socket
+            self.socket.settimeout(0.1)  # 100 ms timeout for faster retries
+
             # Send the packet
             self.socket.sendto(packet, (self.server_ip, self.server_port))
-            
+
             # Print a dot for each successful send
             print('.', end='', flush=True)
-            
+
             if self.debug:
                 logger.debug(f"Sent {len(packet)} bytes to {self.server_ip}:{self.server_port}")
                 logger.debug(f"Packet content: {packet}")
-            
+
             return True
             
         except socket.timeout:
@@ -201,6 +201,10 @@ class ActiveStation:
         
         # Skip WiFi connection check
         self.connected = True
+
+        # If interval is very small, warn user
+        if interval < 0.01:
+            print("Warning: Interval is very small. System/network may not keep up.")
         
         print("\n" + "="*50)
         print("Sending data packets:")
