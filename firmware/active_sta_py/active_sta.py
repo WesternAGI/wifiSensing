@@ -407,9 +407,9 @@ def main():
     )
     
     # Network arguments
-    parser.add_argument("--target-ssid", type=str, required=True,
+    parser.add_argument("--target-ssid", default="mywifi_ssid", type=str, required=False,
                       help="SSID of target WiFi network")
-    parser.add_argument("--target-password", type=str, required=True,
+    parser.add_argument("--target-password", default="mywifi_pass", type=str, required=False,
                       help="Password for target WiFi network")
     parser.add_argument("--server-ip", type=str, default="192.168.4.1",
                       help="IP address of CSI collection AP")
