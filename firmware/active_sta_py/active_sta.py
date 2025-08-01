@@ -1,16 +1,36 @@
 #!/usr/bin/env python3
 """
-Active Station (STA) implementation in Python for Linux/macOS.
-This script connects to a WiFi network and sends data to trigger CSI collection on the access point.
+Cross-Platform Active Station for WiFi CSI Collection with Live Monitoring
+This script connects to a WiFi network, optimizes connection for small UDP packets to maximize
+CSI creation at the AP, provides live monitoring, and can restore the original network connection.
+
+Supports: Linux, macOS, and Raspberry Pi
+Features: High-rate packet transmission, serial CSI logging, live monitoring
 """
 
 import os
 import sys
 import time
+import socket
 import argparse
 import subprocess
+import platform
 import logging
+import threading
 from datetime import datetime
+
+# Try to import optional dependencies
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    def load_dotenv():
+        pass
+
+try:
+    import serial
+    HAS_SERIAL = True
+except ImportError:
+    HAS_SERIAL = False
 
 # -------------------- CONFIG --------------------
 WIFI_INTERFACE = "wlan0"
@@ -19,6 +39,11 @@ SERIAL_PORT = "/dev/ttyUSB0"
 SERIAL_BAUD = 115200
 MAX_PACKET_RATE = 1000  # packets/sec
 MONITOR_INTERVAL = 1.0  # seconds
+
+# Global counters for live monitoring
+packet_counter = 0
+csi_counter = 0
+stop_event = threading.Event()
 
 # -------------------- LOGGING --------------------
 logging.basicConfig(
@@ -29,346 +54,455 @@ logging.basicConfig(
         logging.FileHandler("active_sta.log", mode="a")
     ]
 )
-logger = logging.getLogger('active_sta')
+logger = logging.getLogger("active_sta")
 
-class ActiveStation:
-    def __init__(self, ssid, password, server_ip='192.168.4.1', server_port=80, channel=1, interface=None):
-        """
-        Initialize the Active Station.
-        
-        Args:
-            ssid (str): SSID of the target WiFi network
-            password (str): Password for the WiFi network
-            server_ip (str): IP address of the server (AP) to send data to
-            server_port (int): Port of the server (AP) to send data to
-            channel (int): WiFi channel to use (default: 1)
-            interface (str, optional): Network interface to use (e.g., 'en0' for macOS, 'wlan0' for Linux)
-        """
-        self.ssid = ssid
-        self.password = password
-        self.server_ip = server_ip
-        self.server_port = server_port
-        self.channel = channel
-        self.interface = interface if interface else self._get_wifi_interface()
-        self.connected = False
-        self.debug = False
-        
-        # Set up socket for communication with AP
-        self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.socket.settimeout(2)  # 2 second timeout
-        
-    def _get_wifi_interface(self):
-        """Get the WiFi interface name based on the OS."""
+# -------------------- UTILITIES --------------------
+def run_cmd(cmd):
+    """Execute shell command and return output."""
+    try:
+        return subprocess.check_output(cmd, shell=True, text=True).strip()
+    except subprocess.CalledProcessError:
+        return ""
+
+def optimize_wifi(interface):
+    """Disable power save and increase performance for max CSI."""
+    logger.info("Optimizing WiFi interface for max throughput...")
+    try:
+        os.system(f"sudo iw dev {interface} set power_save off 2>/dev/null")
+        os.system(f"sudo iwconfig {interface} txpower auto 2>/dev/null")
+        os.system(f"sudo ifconfig {interface} txqueuelen 2000 2>/dev/null")
+        os.system(f"sudo iw {interface} set bitrates legacy-2.4 54 2>/dev/null")
+    except Exception as e:
+        logger.warning(f"WiFi optimization failed: {e}")
+
+class NetworkManager:
+    """Cross-platform network management for WiFi connections."""
+    
+    def __init__(self):
+        self.os_type = self._detect_os()
+        self.original_network = None
+        logger.info(f"Detected OS: {self.os_type}")
+    
+    def _detect_os(self):
+        """Detect the operating system type."""
         system = platform.system().lower()
         
+        # Check for Raspberry Pi specifically
         if system == 'linux':
-            # Common WiFi interface names on Linux
-            possible_interfaces = ['wlan0', 'wlp2s0', 'wlp3s0', 'wlan1', 'wlo1', 'wlp0s20f3']
-            
-            # Check which interface exists
-            for interface in possible_interfaces:
-                if os.path.exists(f'/sys/class/net/{interface}'):
-                    logger.debug(f"Found Linux WiFi interface: {interface}")
-                    return interface
-                    
-        elif system == 'darwin':  # macOS
             try:
-                # Use networksetup to find the active WiFi interface
-                result = subprocess.run(
-                    ['networksetup', '-listallhardwareports'],
-                    capture_output=True, text=True, check=True
-                )
-                
-                # Parse the output to find the WiFi interface
-                lines = result.stdout.split('\n')
-                for i, line in enumerate(lines):
-                    if 'Wi-Fi' in line or 'AirPort' in line:
-                        # The next line should contain the device name
-                        if i + 1 < len(lines):
-                            device_line = lines[i + 1]
-                            if 'Device' in device_line:
-                                interface = device_line.split(':')[-1].strip()
-                                logger.debug(f"Found macOS WiFi interface: {interface}")
-                                return interface
-                
-                # Fallback to common interface names if parsing fails
-                possible_interfaces = ['en0', 'en1']
-                for interface in possible_interfaces:
-                    try:
-                        # Check if the interface is a WiFi interface
-                        result = subprocess.run(
-                            ['ifconfig', interface],
-                            capture_output=True, text=True
-                        )
-                        if 'status: active' in result.stdout or 'UP' in result.stdout:
-                            logger.debug(f"Found active interface via ifconfig: {interface}")
-                            return interface
-                    except:
-                        continue
-                        
-            except Exception as e:
-                logger.warning(f"Error detecting WiFi interface: {e}")
-                # Fall through to the error below
+                with open('/proc/cpuinfo', 'r') as f:
+                    cpuinfo = f.read().lower()
+                    if 'raspberry pi' in cpuinfo or 'bcm' in cpuinfo:
+                        return 'raspberry_pi'
+            except:
+                pass
+            return 'linux'
+        elif system == 'darwin':
+            return 'macos'
         else:
             raise OSError(f"Unsupported operating system: {system}")
-            
-        # If we get here, we couldn't determine the interface
-        available_interfaces = []
+    
+    def get_current_network(self):
+        """Get the currently connected WiFi network SSID."""
         try:
-            if system == 'linux':
-                available_interfaces = os.listdir('/sys/class/net/')
-            elif system == 'darwin':
-                result = subprocess.run(['ifconfig', '-l'], capture_output=True, text=True)
-                available_interfaces = result.stdout.strip().split()
-        except:
-            pass
-            
-        error_msg = (
-            "Could not determine WiFi interface. "
-            f"Available interfaces: {available_interfaces}. "
-            "Please specify the interface manually using the --interface argument."
-        )
-        raise OSError(error_msg)
-    
-    def connect_to_wifi(self):
-        """Skip WiFi connection check and proceed."""
-        logger.info("Skipping WiFi connection check. Please ensure you're connected to the ESP32's WiFi network.")
-        logger.info(f"Target AP: {self.server_ip}:{self.server_port}")
-        self.connected = True
-        return True
-    
-    def send_data(self, data=None):
-        """
-        Send data to the server (AP).
+            if self.os_type == 'macos':
+                # Try airport command first
+                result = subprocess.run([
+                    '/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport',
+                    '-I'
+                ], capture_output=True, text=True, timeout=10)
+                
+                if result.returncode == 0:
+                    for line in result.stdout.split('\n'):
+                        if ' SSID:' in line:
+                            ssid = line.split('SSID:')[1].strip()
+                            return ssid if ssid else None
+                
+                # Alternative method for macOS
+                result = subprocess.run([
+                    'networksetup', '-getairportnetwork', 'en0'
+                ], capture_output=True, text=True, timeout=10)
+                
+                if result.returncode == 0 and 'Current Wi-Fi Network:' in result.stdout:
+                    return result.stdout.split('Current Wi-Fi Network:')[1].strip()
+                    
+            elif self.os_type in ['linux', 'raspberry_pi']:
+                # Try nmcli first (NetworkManager)
+                result = subprocess.run([
+                    'nmcli', '-t', '-f', 'active,ssid', 'dev', 'wifi'
+                ], capture_output=True, text=True, timeout=10)
+                
+                if result.returncode == 0:
+                    for line in result.stdout.split('\n'):
+                        if line.startswith('yes:'):
+                            return line.split(':', 1)[1]
+                
+                # Try iwgetid as fallback
+                result = subprocess.run([
+                    'iwgetid', '-r'
+                ], capture_output=True, text=True, timeout=10)
+                
+                if result.returncode == 0:
+                    return result.stdout.strip()
+                    
+        except Exception as e:
+            logger.warning(f"Could not get current network: {e}")
         
-        Args:
-            data (bytes, optional): Data to send. If None, a default packet will be created.
+        return None
+    
+    def connect_to_network(self, ssid, password, interface=None):
+        """Connect to a WiFi network."""
+        logger.info(f"Connecting to network: {ssid}")
+        
+        try:
+            if self.os_type == 'macos':
+                return self._connect_macos(ssid, password, interface)
+            elif self.os_type in ['linux', 'raspberry_pi']:
+                return self._connect_linux(ssid, password, interface)
+        except Exception as e:
+            logger.error(f"Failed to connect to {ssid}: {e}")
+            return False
+    
+    def _connect_macos(self, ssid, password, interface=None):
+        """Connect to WiFi on macOS."""
+        interface = interface or 'en0'
+        
+        try:
+            # Connect to network
+            result = subprocess.run([
+                'networksetup', '-setairportnetwork', interface, ssid, password
+            ], capture_output=True, text=True, timeout=30)
             
-        Returns:
-            bool: True if data was sent successfully, False otherwise
-        """
-        if not self.connected:
-            logger.warning("Not connected to WiFi")
+            if result.returncode == 0:
+                # Wait for connection to establish
+                for i in range(10):
+                    time.sleep(2)
+                    current = self.get_current_network()
+                    if current == ssid:
+                        logger.info(f"Successfully connected to {ssid}")
+                        return True
+                
+            logger.error(f"Failed to connect to {ssid}: {result.stderr}")
             return False
             
+        except subprocess.TimeoutExpired:
+            logger.error("Connection attempt timed out")
+            return False
+        except Exception as e:
+            logger.error(f"macOS connection error: {e}")
+            return False
+    
+    def _connect_linux(self, ssid, password, interface=None):
+        """Connect to WiFi on Linux/Raspberry Pi."""
         try:
-            # Create a more noticeable packet if none provided
-            if data is None:
-                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
-                packet = f"CSI_DATA_PACKET_{timestamp}".encode('utf-8')
+            # Try NetworkManager first
+            if self._has_command('nmcli'):
+                return self._connect_networkmanager(ssid, password, interface)
+            else:
+                logger.error("NetworkManager (nmcli) not found")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Linux connection error: {e}")
+            return False
+    
+    def _connect_networkmanager(self, ssid, password, interface=None):
+        """Connect using NetworkManager (nmcli)."""
+        try:
+            # Create new connection
+            cmd = ['nmcli', 'device', 'wifi', 'connect', ssid, 'password', password]
+            if interface:
+                cmd.extend(['ifname', interface])
+            
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            
+            if result.returncode == 0:
+                # Verify connection
+                time.sleep(3)
+                current = self.get_current_network()
+                if current == ssid:
+                    logger.info(f"Successfully connected to {ssid}")
+                    return True
+            
+            logger.error(f"NetworkManager connection failed: {result.stderr}")
+            return False
+            
+        except subprocess.TimeoutExpired:
+            logger.error("NetworkManager connection timed out")
+            return False
+    
+    def _has_command(self, command):
+        """Check if a command is available."""
+        try:
+            subprocess.run(['which', command], check=True, 
+                         capture_output=True, timeout=5)
+            return True
+        except:
+            return False
+
+# -------------------- PACKET TRANSMISSION --------------------
+def send_packets_continuously(target_ip, packet_rate, stop_event):
+    """Send UDP packets continuously at specified rate."""
+    global packet_counter
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 65536)  # increase buffer
+    
+    # Create optimized packet
+    base_data = f"CSI_PKT_{datetime.now().strftime('%H%M%S')}_"
+    payload = (base_data + "A" * (120 - len(base_data))).encode('utf-8')
+
+    logger.info(f"Sending packets to {target_ip} at {packet_rate} pkt/s")
+    interval = 1.0 / packet_rate
+    next_time = time.time()
+
+    while not stop_event.is_set():
+        try:
+            sock.sendto(payload, (target_ip, 80))
+            packet_counter += 1
+            next_time += interval
+            sleep_time = next_time - time.time()
+            if sleep_time > 0:
+                time.sleep(sleep_time)
             else:
                 next_time = time.time()
         except Exception as e:
-            print('F', end='', flush=True)  # F for Failure
-            logger.error(f"Failed to send data to {self.server_ip}:{self.server_port}: {e}")
+            logger.error(f"Packet send error: {e}")
+            time.sleep(0.001)
+
+    sock.close()
+    logger.info("Packet transmission stopped.")
+
+# -------------------- SERIAL LOGGING --------------------
+def log_serial_data(output_file, duration, skip_serial=False):
+    """Log CSI data from serial port."""
+    global csi_counter
+    start_time = time.time()
+    
+    if skip_serial or not HAS_SERIAL:
+        if not HAS_SERIAL:
+            logger.warning("pyserial not installed, skipping serial logging")
+        else:
+            logger.info("Skipping serial logging (mock mode).")
+        time.sleep(duration)
+        return
+
+    try:
+        with serial.Serial(SERIAL_PORT, SERIAL_BAUD, timeout=0.01) as ser, open(output_file, "w") as f:
+            f.write("timestamp,csi_data\n")
+            while time.time() - start_time < duration and not stop_event.is_set():
+                if ser.in_waiting > 0:
+                    line = ser.readline().decode('utf-8', errors='ignore').strip()
+                    if "CSI_DATA" in line:
+                        csi_counter += 1
+                        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+                        f.write(f"{timestamp},{line}\n")
+                        f.flush()
+                else:
+                    time.sleep(0.001)
+    except Exception as e:
+        logger.error(f"Serial logging error: {e}")
+
+# -------------------- LIVE MONITOR --------------------
+def live_monitor():
+    """Monitor packet and CSI rates in real-time."""
+    global packet_counter, csi_counter
+    last_packets = 0
+    last_csi = 0
+    
+    while not stop_event.is_set():
+        time.sleep(MONITOR_INTERVAL)
+        pps = packet_counter - last_packets
+        cps = csi_counter - last_csi
+        logger.info(f"Live: {pps} pkt/s | {cps} CSI/s | Total packets={packet_counter}, CSI={csi_counter}")
+        last_packets, last_csi = packet_counter, csi_counter
+
+class ActiveStation:
+    """Enhanced Active Station with cross-platform support and live monitoring."""
+    
+    def __init__(self, target_ssid, target_password, server_ip='192.168.4.1', 
+                 interface=None, return_to_original=True):
+        self.target_ssid = target_ssid
+        self.target_password = target_password
+        self.server_ip = server_ip
+        self.interface = interface or self._get_default_interface()
+        self.return_to_original = return_to_original
+        
+        # Initialize network manager
+        self.network_manager = NetworkManager()
+        self.original_network = None
+        
+    def _get_default_interface(self):
+        """Get default WiFi interface based on OS."""
+        system = platform.system().lower()
+        if system == 'darwin':
+            return 'en0'
+        else:
+            return 'wlan0'
+    
+    def connect_to_target_network(self):
+        """Connect to the target WiFi network."""
+        if self.return_to_original:
+            self.original_network = self.network_manager.get_current_network()
+            if self.original_network:
+                logger.info(f"Current network: {self.original_network} (will restore later)")
+        
+        logger.info(f"Connecting to target network: {self.target_ssid}")
+        success = self.network_manager.connect_to_network(
+            self.target_ssid, self.target_password, self.interface
+        )
+        
+        if success:
+            optimize_wifi(self.interface)
+            logger.info("Successfully connected and optimized for CSI collection")
+            return True
+        else:
+            logger.error(f"Failed to connect to target network: {self.target_ssid}")
             return False
     
-    def run(self, interval=1.0, duration=None):
-        """
-        Run the active station.
+    def disconnect_and_restore(self):
+        """Restore original network connection."""
+        if not self.return_to_original or not self.original_network:
+            logger.info("Staying connected to target network")
+            return True
         
-        Args:
-            interval (float): Time in seconds between sending data packets (default: 1.0)
-            duration (int): Duration in seconds to run for (default: None, run indefinitely)
-        """
-        print("\n" + "="*50)
-        print(f"Starting Active Station")
-        print(f"Interface: {self.interface}" if self.interface else "Interface: Auto-detected")
-        print(f"Target AP: {self.server_ip}:{self.server_port}")
-        print(f"Channel: {self.channel}")
-        print(f"Interval: {interval} seconds")
-        print("="*50 + "\n")
-        
-        # Skip WiFi connection check
-        self.connected = True
-
-        # If interval is very small, warn user
-        if interval < 0.01:
-            print("Warning: Interval is very small. System/network may not keep up.")
-        
-        print("\n" + "="*50)
-        print("Sending data packets:")
-        print("  . = Packet sent successfully")
-        print("  T = Timeout")
-        print("  E = Address error")
-        print("  F = Other failure")
-        print("\nPress Ctrl+C to stop")
-        print("-"*50 + "\n")
-        
-        start_time = time.time()
-        packet_count = 0
-        last_log_time = time.time()
-        consecutive_failures = 0
-        max_consecutive_failures = 5
+        logger.info(f"Restoring connection to original network: {self.original_network}")
         
         try:
-            while True:
-                current_time = time.time()
+            if self.network_manager.os_type == 'macos':
+                result = subprocess.run([
+                    'networksetup', '-setairportnetwork', 
+                    self.interface, self.original_network
+                ], capture_output=True, text=True, timeout=30)
                 
-                # Check if we've exceeded the duration
-                if duration and (current_time - start_time) > duration:
-                    print("\n" + "="*50)
-                    print(f"Reached duration limit of {duration} seconds. Stopping.")
-                    break
+                if result.returncode == 0:
+                    time.sleep(3)
+                    current = self.network_manager.get_current_network()
+                    if current == self.original_network:
+                        logger.info(f"Successfully restored connection to {self.original_network}")
+                        return True
+                        
+            elif self.network_manager.os_type in ['linux', 'raspberry_pi']:
+                result = subprocess.run([
+                    'nmcli', 'connection', 'up', self.original_network
+                ], capture_output=True, text=True, timeout=30)
                 
-                # Log status every 5 seconds
-                if current_time - last_log_time >= 5.0:
-                    elapsed = current_time - start_time
-                    success_rate = (packet_count / (elapsed / interval)) * 100 if elapsed > 0 else 0
-                    print(f"\n[Status] Running for {elapsed:.1f}s | "
-                          f"Packets: {packet_count} | "
-                          f"Rate: {packet_count/max(elapsed, 0.1):.1f} pkt/s | "
-                          f"Success: {success_rate:.1f}%")
-                    last_log_time = current_time
-                
-                # Send data packet
-                if self.send_data():
-                    packet_count += 1
-                    consecutive_failures = 0
-                else:
-                    consecutive_failures += 1
-                    if consecutive_failures >= max_consecutive_failures:
-                        print(f"\n\nToo many failures ({consecutive_failures}). Check your connection to the ESP32.")
-                        print(f"- Make sure you're connected to the ESP32's WiFi network")
-                        print(f"- Verify the ESP32 is running in AP mode with IP {self.server_ip}")
-                        print(f"- Check if any firewall is blocking the connection\n")
-                        consecutive_failures = 0  # Reset counter after showing message
-                
-                # Calculate sleep time to maintain consistent interval
-                elapsed_in_loop = time.time() - current_time
-                sleep_time = max(0, interval - elapsed_in_loop)
-                if sleep_time > 0:
-                    time.sleep(sleep_time)
-                
-        except KeyboardInterrupt:
-            print("\n" + "="*50)
-            print("Received keyboard interrupt. Stopping...")
+                if result.returncode == 0:
+                    time.sleep(3)
+                    current = self.network_manager.get_current_network()
+                    if current == self.original_network:
+                        logger.info(f"Successfully restored connection to {self.original_network}")
+                        return True
+            
+            logger.warning(f"Could not automatically restore {self.original_network}")
+            return False
             
         except Exception as e:
-            print("\n" + "="*50)
-            logger.error(f"Unexpected error: {e}", exc_info=True)
-            
-        finally:
-            elapsed = time.time() - start_time
-            print("\n" + "="*50)
-            print("Active Station Stopped")
-            print(f"Total runtime: {elapsed:.1f} seconds")
-            print(f"Total packets sent: {packet_count}")
-            if elapsed > 0:
-                print(f"Average packet rate: {packet_count/elapsed:.2f} packets/second")
-                print(f"Success rate: {(packet_count / (elapsed / interval) * 100):.1f}%")
-            print("="*50 + "\n")
-            
-            try:
-                self.socket.close()
-            except Exception as e:
-                if self.debug:
-                    logger.debug(f"Error closing socket: {e}")
+            logger.error(f"Error restoring original network: {e}")
+            return False
 
-
+# -------------------- MAIN --------------------
 def main():
-    # Parse command line arguments
-    #python active_sta.py --ssid mywifi_ssid --password mywifi_pass --debug
     parser = argparse.ArgumentParser(
-        description='Active Station for WiFi CSI collection\n\n'
-        'IMPORTANT: Before running this script, please ensure:\n'
-        '1. Your ESP32 is powered on and in Access Point (AP) mode\n'
-        '2. Your computer is connected to the ESP32\'s WiFi network\n'
-        '3. The ESP32 IP is 192.168.4.1 (default for ESP32 in AP mode)\n\n',
-        formatter_class=argparse.RawTextHelpFormatter
+        description='Cross-platform Active Station for WiFi CSI collection with live monitoring'
     )
     
-    parser.add_argument('--ssid', type=str, default='mywifi_ssid',
-                      help='SSID of the target WiFi network (default: mywifi_ssid)')
-    parser.add_argument('--password', type=str, default='mywifi_pass',
-                      help='Password for the WiFi network (default: mywifi_pass)')
-    parser.add_argument('--server-ip', type=str, default='192.168.4.1',
-                      help='IP address of the ESP32 (default: 192.168.4.1)')
-    parser.add_argument('--server-port', type=int, default=80,
-                      help='Port of the ESP32 (default: 80)')
-    parser.add_argument('--channel', type=int, default=1,
-                      help='WiFi channel (default: 1)')
-    parser.add_argument('--interface', type=str, default=None,
-                      help='Network interface (e.g., en0, wlan0). Auto-detected if not specified')
-    parser.add_argument('--interval', type=float, default=1.0,
-                      help='Time between packets in seconds (default: 1.0)')
-    parser.add_argument('--duration', type=int, default=None,
-                      help='Run duration in seconds (default: run indefinitely)')
-    parser.add_argument('--debug', action='store_true',
-                      help='Enable debug logging')
+    # Network arguments
+    parser.add_argument("--target-ssid", type=str, required=True,
+                      help="SSID of target WiFi network")
+    parser.add_argument("--target-password", type=str, required=True,
+                      help="Password for target WiFi network")
+    parser.add_argument("--server-ip", type=str, default="192.168.4.1",
+                      help="IP address of CSI collection AP")
+    parser.add_argument("--interface", type=str, default=None,
+                      help="WiFi interface (auto-detected if not specified)")
+    
+    # Transmission arguments
+    parser.add_argument("--rate", type=int, default=100,
+                      help="Packet transmission rate (pkt/s)")
+    parser.add_argument("--duration", type=int, default=30,
+                      help="Duration in seconds")
+    
+    # Output arguments
+    parser.add_argument("--output", type=str, default="csi_output.csv",
+                      help="Output file for CSI data")
+    parser.add_argument("--no-serial", action="store_true",
+                      help="Skip serial logging")
+    
+    # Control arguments
+    parser.add_argument("--no-restore", action="store_true",
+                      help="Don't restore original network")
+    parser.add_argument("--debug", action="store_true",
+                      help="Enable debug logging")
     
     args = parser.parse_args()
     
-    # Set log level
     if args.debug:
         logger.setLevel(logging.DEBUG)
     
-    # Print connection help
-    print("\n" + "="*70)
-    print(f"Targeting ESP32 at {args.server_ip}:{args.server_port}")
-    print("="*70)
-    
-    if args.interface:
-        print(f"Using network interface: {args.interface}")
-    else:
-        print("Auto-detecting network interface...")
-    
-    print("\nMake sure your computer is connected to the ESP32's WiFi network:")
-    print(f"  SSID:     {args.ssid}")
-    print(f"  Password: {'*' * len(args.password)}")
-    print("\nIf you see many failures (T/E/F), please check:")
-    print("  1. Your computer is connected to the ESP32's WiFi")
-    print("  2. The ESP32 is powered on and in AP mode")
-    print("  3. No firewall is blocking the connection")
-    print("="*70 + "\n")
-    
-    # Load environment variables from .env file if it exists
+    # Load environment variables
     load_dotenv()
     
-    # Get SSID and password from arguments, environment variables, or prompt
-    ssid = args.ssid or os.getenv('WIFI_SSID')
-    password = args.password or os.getenv('WIFI_PASSWORD')
+    # Get credentials
+    target_ssid = args.target_ssid or os.getenv('TARGET_WIFI_SSID')
+    target_password = args.target_password or os.getenv('TARGET_WIFI_PASSWORD')
     
-    if not ssid:
-        ssid = input("Enter WiFi SSID: ")
-    if not password:
-        import getpass
-        password = getpass.getpass("Enter WiFi password: ")
+    if not target_ssid or not target_password:
+        logger.error("Target WiFi SSID and password are required")
+        sys.exit(1)
     
-    # Create and run the active station
+    print(f"\nTarget Network: {target_ssid}")
+    print(f"Packet Rate: {args.rate} packets/second")
+    print(f"Duration: {args.duration} seconds")
+    print(f"Output File: {args.output}")
+    print(f"Restore Original: {'No' if args.no_restore else 'Yes'}")
+    
+    # Create active station
     station = ActiveStation(
-        ssid=ssid,
-        password=password,
+        target_ssid=target_ssid,
+        target_password=target_password,
         server_ip=args.server_ip,
-        server_port=args.server_port,
-        channel=args.channel,
-        interface=args.interface
+        interface=args.interface,
+        return_to_original=not args.no_restore
     )
     
-    # Store debug flag
-    station.debug = args.debug
-    
-    station.run(interval=args.interval, duration=args.duration)
-
+    try:
+        # Connect to target network
+        if not station.connect_to_target_network():
+            logger.error("Failed to connect to target network")
+            sys.exit(1)
+        
+        # Start threads for packet transmission, CSI logging, and monitoring
+        threads = [
+            threading.Thread(target=send_packets_continuously, 
+                           args=(args.server_ip, args.rate, stop_event)),
+            threading.Thread(target=log_serial_data, 
+                           args=(args.output, args.duration, args.no_serial)),
+            threading.Thread(target=live_monitor)
+        ]
+        
+        logger.info("Starting CSI collection...")
+        for t in threads:
+            t.start()
+        
+        # Wait for completion
+        time.sleep(args.duration)
+        stop_event.set()
+        
+        for t in threads:
+            t.join()
+        
+        logger.info("CSI collection complete.")
+        
+        # Restore original network
+        if not args.no_restore:
+            station.disconnect_and_restore()
+        
+    except KeyboardInterrupt:
+        logger.info("Interrupted by user")
+        stop_event.set()
+    except Exception as e:
+        logger.error(f"Fatal error: {e}")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
-
-# (venv) (base) lab7@lab7-XPS-8940:~/Desktop/wifiSensing/firmware/active_sta_py$ python active_sta.py --ssid mywifi_ssid --password mywifi_pass --debug
-# 2025-07-13 22:39:50,317 - active_sta - DEBUG - Found Linux WiFi interface: wlo1
-
-# ==================================================
-# Starting Active Station
-# Interface: wlo1
-# Connecting to SSID: mywifi_ssid
-# Target AP: 192.168.4.1:80
-# Channel: 1
-# Interval: 1.0 seconds
-# ==================================================
-
-# Error: Connection activation failed: Secrets were required, but not provided.
-# 2025-07-13 22:40:35,695 - active_sta - ERROR - Failed to connect to WiFi: Command '['nmcli', 'device', 'wifi', 'connect', 'mywifi_ssid', 'password', 'mywifi_pass']' returned non-zero exit status 4.
-# 2025-07-13 22:40:35,695 - active_sta - ERROR - Failed to connect to WiFi. Exiting.
-# (venv) (base) lab7@lab7-XPS-8940:~/Desktop/wifiSensing/firmware/active_sta_py$ ^C
-# (venv) (base) lab7@lab7-XPS-8940:~/Desktop/wifiSensing/firmware/active_sta_py$ 
-
