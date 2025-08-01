@@ -241,36 +241,94 @@ class NetworkManager:
             return False
 
 # -------------------- PACKET TRANSMISSION --------------------
-def send_packets_continuously(target_ip, packet_rate, stop_event):
-    """Send UDP packets continuously at specified rate."""
+def send_packets_continuously(target_ip, packet_rate, stop_event, packet_size=64, buffer_size=1048576):
+    """Send UDP packets continuously at specified rate with maximum throughput optimization."""
     global packet_counter
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 65536)  # increase buffer
     
-    # Create optimized packet
-    base_data = f"CSI_PKT_{datetime.now().strftime('%H%M%S')}_"
-    payload = (base_data + "A" * (120 - len(base_data))).encode('utf-8')
+    # Maximize socket performance for high-rate transmission
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, buffer_size)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, buffer_size)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    
+    # Create packet with specified size for optimal CSI generation
+    base_data = f"CSI_{datetime.now().strftime('%H%M%S')}_"
+    padding_size = max(0, packet_size - len(base_data.encode('utf-8')))
+    payload = (base_data + "X" * padding_size).encode('utf-8')[:packet_size]
 
-    logger.info(f"Sending packets to {target_ip} at {packet_rate} pkt/s")
-    interval = 1.0 / packet_rate
+    logger.info(f"Starting HIGH-RATE transmission to {target_ip} at {packet_rate} pkt/s")
+    logger.info(f"Packet size: {len(payload)} bytes (optimized for CSI)")
+    
+    # Handle maximum rate mode
+    if packet_rate >= 10000:  # Very high rate
+        interval = 0.0001  # 10,000 pkt/s max
+        logger.warning("Using maximum rate mode - may stress system")
+    else:
+        interval = 1.0 / packet_rate
+    
     next_time = time.time()
+    error_count = 0
+    max_errors = 100
 
     while not stop_event.is_set():
         try:
             sock.sendto(payload, (target_ip, 80))
             packet_counter += 1
+            
+            # Precise timing control
             next_time += interval
             sleep_time = next_time - time.time()
+            
             if sleep_time > 0:
-                time.sleep(sleep_time)
+                if sleep_time > 0.001:  # Only sleep if > 1ms
+                    time.sleep(sleep_time)
             else:
-                next_time = time.time()
+                next_time = time.time()  # Reset if behind
+                
         except Exception as e:
-            logger.error(f"Packet send error: {e}")
-            time.sleep(0.001)
+            error_count += 1
+            if error_count < max_errors:
+                time.sleep(0.0001)
+            else:
+                logger.error(f"Too many packet send errors: {e}")
+                break
 
     sock.close()
-    logger.info("Packet transmission stopped.")
+    logger.info(f"Packet transmission stopped. Sent {packet_counter} packets total.")
+
+def send_burst_packets(target_ip, burst_size, burst_interval, stop_event, packet_size=64, buffer_size=1048576):
+    """Send packets in bursts for maximum CSI generation with controlled intervals."""
+    global packet_counter
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    
+    # Optimize socket for burst transmission
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, buffer_size)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    
+    # Create packet with specified size
+    base_data = f"BURST_{datetime.now().strftime('%H%M%S')}_"
+    padding_size = max(0, packet_size - len(base_data.encode('utf-8')))
+    payload = (base_data + "X" * padding_size).encode('utf-8')[:packet_size]
+    
+    logger.info(f"Starting BURST mode: {burst_size} packets every {burst_interval}s")
+    logger.info(f"Packet size: {len(payload)} bytes")
+    
+    while not stop_event.is_set():
+        try:
+            # Send burst of packets as fast as possible
+            for i in range(burst_size):
+                sock.sendto(payload, (target_ip, 80))
+                packet_counter += 1
+                
+            # Wait before next burst
+            time.sleep(burst_interval)
+            
+        except Exception as e:
+            logger.error(f"Burst send error: {e}")
+            time.sleep(0.01)
+    
+    sock.close()
+    logger.info(f"Burst transmission stopped. Sent {packet_counter} packets total.")
 
 # -------------------- SERIAL LOGGING --------------------
 def log_serial_data(output_file, duration, skip_serial=False):
@@ -421,6 +479,10 @@ def main():
                       help="Packet transmission rate (pkt/s)")
     parser.add_argument("--duration", type=int, default=30,
                       help="Duration in seconds")
+    parser.add_argument("--packet-size", type=int, default=64,
+                      help="Packet size in bytes")
+    parser.add_argument("--buffer-size", type=int, default=1048576,
+                      help="Socket buffer size in bytes")
     
     # Output arguments
     parser.add_argument("--output", type=str, default="csi_output.csv",
@@ -452,6 +514,8 @@ def main():
     
     print(f"\nTarget Network: {target_ssid}")
     print(f"Packet Rate: {args.rate} packets/second")
+    print(f"Packet Size: {args.packet_size} bytes")
+    print(f"Buffer Size: {args.buffer_size} bytes")
     print(f"Duration: {args.duration} seconds")
     print(f"Output File: {args.output}")
     print(f"Restore Original: {'No' if args.no_restore else 'Yes'}")
@@ -474,7 +538,7 @@ def main():
         # Start threads for packet transmission, CSI logging, and monitoring
         threads = [
             threading.Thread(target=send_packets_continuously, 
-                           args=(args.server_ip, args.rate, stop_event)),
+                           args=(args.server_ip, args.rate, stop_event, args.packet_size, args.buffer_size)),
             threading.Thread(target=log_serial_data, 
                            args=(args.output, args.duration, args.no_serial)),
             threading.Thread(target=live_monitor)
