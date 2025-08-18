@@ -11,6 +11,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 from sklearn.metrics import classification_report, confusion_matrix
 import torch.nn.functional as F
+from scripts.adaptation_utils import recalibrate_bn
 
 # =============================================================================
 # CELL 2: PyTorch Neural Network Model Definition
@@ -45,6 +46,114 @@ class WiFiSensingNet(nn.Module):
         
     def forward(self, x):
         return self.network(x)
+
+# -----------------------------------------------------------------------------
+# Optional: Self-attention enhanced model (tokenizes 10800 features into tokens)
+# -----------------------------------------------------------------------------
+
+class _ReshapeTokens(nn.Module):
+    """
+    Reshape flat feature vector (B, F) -> (B, T, C), where F = T * C.
+    """
+    def __init__(self, num_tokens: int):
+        super().__init__()
+        self.num_tokens = num_tokens
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        b, f = x.shape
+        t = self.num_tokens
+        c = f // t
+        x = x.view(b, t, c)
+        return x
+
+
+class _GlobalAvgPool1D(nn.Module):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: (B, T, C) -> (B, C)
+        return x.mean(dim=1)
+
+
+class WiFiSensingNetAttn(nn.Module):
+    """
+    Attention-augmented architecture for 10800-dim inputs.
+    - Tokenizes input into `num_tokens` segments, runs Transformer encoder, then MLP head.
+    - Keeps `.network` as nn.Sequential so it remains compatible with DomainAdversarialWrapper.
+    """
+    def __init__(
+        self,
+        input_size: int = 10800,
+        num_classes: int = 2,
+        num_tokens: int = 100,
+        d_model: int = 128,
+        nhead: int = 4,
+        enc_layers: int = 2,
+        ff_dim: int = 256,
+        mlp_hidden: list = [512, 256],
+        dropout: float = 0.2,
+    ):
+        super().__init__()
+        assert input_size % num_tokens == 0, "input_size must be divisible by num_tokens"
+        token_dim = input_size // num_tokens
+
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model, nhead=nhead, dim_feedforward=ff_dim, dropout=dropout, batch_first=True
+        )
+        transformer = nn.TransformerEncoder(encoder_layer, num_layers=enc_layers)
+
+        head_layers = []
+        prev = d_model
+        for h in mlp_hidden:
+            head_layers.extend([
+                nn.Linear(prev, h),
+                nn.BatchNorm1d(h),
+                nn.ReLU(inplace=True),
+                nn.Dropout(dropout),
+            ])
+            prev = h
+        head_layers.append(nn.Linear(prev, num_classes))
+
+        self.network = nn.Sequential(
+            _ReshapeTokens(num_tokens),                # (B, F) -> (B, T, C)
+            nn.Linear(token_dim, d_model),             # per-token projection
+            nn.ReLU(inplace=True),
+            transformer,                                # self-attention encoder (B, T, d_model)
+            _GlobalAvgPool1D(),                        # (B, d_model)
+            *head_layers,
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.network(x)
+
+
+# -----------------------------------------------------------------------------
+# Evaluation helper: optional AdaBN recalibration before evaluation
+# -----------------------------------------------------------------------------
+
+def evaluate_with_optional_adabn(
+    model: nn.Module,
+    test_loader: DataLoader,
+    device: torch.device,
+    adabn_loader: DataLoader = None,
+    adabn_max_batches: int = 200,
+):
+    """
+    If `adabn_loader` is provided, run AdaBN recalibration on unlabeled target data
+    before evaluation. Otherwise, evaluate directly.
+    Returns (all_targets, all_predictions).
+    """
+    if adabn_loader is not None:
+        recalibrate_bn(model, adabn_loader, max_batches=adabn_max_batches, device=device)
+
+    model.eval()
+    all_predictions, all_targets = [], []
+    with torch.no_grad():
+        for data, target in test_loader:
+            data, target = data.to(device), target.to(device)
+            outputs = model(data)
+            _, predicted = torch.max(outputs.data, 1)
+            all_predictions.extend(predicted.cpu().numpy())
+            all_targets.extend(target.cpu().numpy())
+    return all_targets, all_predictions
 
 # =============================================================================
 # CELL 3: Data Preparation for PyTorch
