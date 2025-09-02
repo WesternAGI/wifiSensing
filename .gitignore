@@ -18,3 +18,9 @@ venv/
 *.pyc
 __pycache__/
 README.md
+
+# Ignore large model artifacts and datasets
+model/*.pth
+model/*.pkl
+data/**
+model/results/**
